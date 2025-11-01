@@ -45,3 +45,12 @@ jobs:
         with:
           name: wheels-macos
           path: dist/*.whl
+      
+      - name: Build sdist (optional)
+        run: python -m pip install build && python -m build --sdist
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
