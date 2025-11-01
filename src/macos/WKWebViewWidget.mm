@@ -45,13 +45,20 @@ struct WKWebViewWidget::Impl {
 
 static NSURL* toNSURL(QUrl u) {
     if (!u.isValid()) return nil;
+
     if (u.scheme().isEmpty())
         u = QUrl::fromUserInput(u.toString());
+
+    if (u.scheme() == "http")
+        u.setScheme("https");
+
     if (u.isLocalFile())
         return [NSURL fileURLWithPath:[NSString stringWithUTF8String:u.toLocalFile().toUtf8().constData()]];
+
     const QByteArray enc = u.toString(QUrl::FullyEncoded).toUtf8();
     return [NSURL URLWithString:[NSString stringWithUTF8String:enc.constData()]];
 }
+
 
 WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     : QWidget(parent), d(new Impl) {
