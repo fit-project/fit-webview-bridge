@@ -1,7 +1,5 @@
 # FIT WebView Bridge
 
-[🇬🇧 English](README.md) | [🇮🇹 Italiano](README.it.md)
-
 ### Description
 
 **FIT WebView Bridge** is a cross‑platform Qt widget (C++/Objective‑C++) with **PySide6** bindings that wraps the OS‑native web engines:
