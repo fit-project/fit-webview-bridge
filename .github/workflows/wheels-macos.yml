@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
 
       - name: Install build tools
         run: |
-          python -m pip install -U cibuildwheel aqtinstall
+          python -m pip install -U cibuildwheel aqtinstall build
 
       - name: Install Qt SDK via aqt
         run: |
@@ -57,17 +57,26 @@ jobs:
           SKBUILD_BUILD_LOG: "1"
         run: python -m cibuildwheel --output-dir dist
 
-      - name: Upload wheels artifact
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos
-          path: dist/*.whl
+          name: dist
+          path: dist/*
 
-      - name: Build sdist (optional)
-        run: python -m pip install build && python -m build --sdist
+  publish:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
 
       - name: Publish to PyPI
-        if: startsWith(github.ref, 'refs/tags/')
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
