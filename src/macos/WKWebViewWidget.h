@@ -22,6 +22,9 @@ public:
     Q_INVOKABLE void reload();
     Q_INVOKABLE void evaluateJavaScript(const QString& script);
 
+    Q_INVOKABLE void setDownloadDirectory(const QString& dirPath);
+    Q_INVOKABLE QString downloadDirectory() const;
+
 signals:
     void loadFinished(bool ok);
     void urlChanged(const QUrl& url);
@@ -29,6 +32,12 @@ signals:
     void loadProgress(int percent);
     void canGoBackChanged(bool);
     void canGoForwardChanged(bool);
+
+
+    void downloadStarted(const QString& suggestedFilename, const QString& destinationPath);
+    void downloadProgress(qint64 bytesReceived, qint64 totalBytes);
+    void downloadFinished(const QString& filePath);
+    void downloadFailed(const QString& filePath, const QString& error);
 
 protected:
     void showEvent(QShowEvent*) override;
