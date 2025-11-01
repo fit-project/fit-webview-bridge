@@ -1,16 +1,21 @@
 #pragma once
 #include <QWidget>
 #include <QObject>
+#include <QUrl>
 
-class QString; class QUrl; class QShowEvent; class QResizeEvent;
+class QString; class QShowEvent; class QResizeEvent;
 
 class WKWebViewWidget : public QWidget {
     Q_OBJECT
+    Q_PROPERTY(QUrl url READ url WRITE setUrl NOTIFY urlChanged)
+
 public:
     explicit WKWebViewWidget(QWidget* parent = nullptr);
     ~WKWebViewWidget() override;
 
-    Q_INVOKABLE void load(const QString& url);
+    Q_INVOKABLE QUrl url() const;
+    Q_INVOKABLE void setUrl(const QUrl& url);
+
     Q_INVOKABLE void back();
     Q_INVOKABLE void forward();
     Q_INVOKABLE void stop();
