@@ -179,6 +179,4 @@ pyrightconfig.json
 *.db
 .DS_Store
 FIT/
-COMPILAZIONE.md
-TEST.md
 Qt/
