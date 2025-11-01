@@ -1,33 +1,27 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Python + Shiboken6 + PySide6
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 find_program(SHIBOKEN6_GEN shiboken6 REQUIRED)
 
-# =============== Qt headers (solo SDK, via aqt) ==================
-# Passa -DQt6_DIR=/path/to/Qt/6.9.0/macos/lib/cmake/Qt6
+
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets)
 
-# Deriva la cartella frameworks (…/macos/lib) a partire da Qt6_DIR
-get_filename_component(_qt_cmake_dir "${Qt6_DIR}" DIRECTORY)            # …/macos/lib/cmake
-get_filename_component(QT_FRAMEWORKS_DIR "${_qt_cmake_dir}" DIRECTORY)  # …/macos/lib
+get_filename_component(_qt_cmake_dir "${Qt6_DIR}" DIRECTORY)
+get_filename_component(QT_FRAMEWORKS_DIR "${_qt_cmake_dir}" DIRECTORY)
 
-# Verifica headers Qt (SDK)
 foreach(_mod QtCore QtGui QtWidgets)
   if(NOT EXISTS "${QT_FRAMEWORKS_DIR}/${_mod}.framework/Headers")
     message(FATAL_ERROR "Missing ${_mod}.framework/Headers under: ${QT_FRAMEWORKS_DIR}")
   endif()
 endforeach()
 
-# Shim uniforme per includere QtCore/QtGui/QtWidgets
 set(QT_HDRSHIM "${CMAKE_BINARY_DIR}/qt_hdrshim")
 file(MAKE_DIRECTORY "${QT_HDRSHIM}")
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"    "${QT_HDRSHIM}/QtCore"    SYMBOLIC)
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"     "${QT_HDRSHIM}/QtGui"     SYMBOLIC)
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers" "${QT_HDRSHIM}/QtWidgets" SYMBOLIC)
 
-# =============== PySide6 runtime (da site-packages) ===============
-# Dir dei frameworks Qt nel venv (PySide6/Qt/lib)
 if(NOT DEFINED PYSIDE_QT_LIBDIR)
   execute_process(
     COMMAND ${Python3_EXECUTABLE} -c "import os, PySide6; print(os.path.join(os.path.dirname(PySide6.__file__), 'Qt', 'lib'))"
@@ -39,7 +33,6 @@ if(NOT EXISTS "${PYSIDE_QT_LIBDIR}")
   message(FATAL_ERROR "PySide6 Qt frameworks not found: ${PYSIDE_QT_LIBDIR}")
 endif()
 
-# Binari framework da PySide6 (linker)
 set(QTCORE_BIN    "${PYSIDE_QT_LIBDIR}/QtCore.framework/Versions/A/QtCore")
 set(QTGUI_BIN     "${PYSIDE_QT_LIBDIR}/QtGui.framework/Versions/A/QtGui")
 set(QTWIDGETS_BIN "${PYSIDE_QT_LIBDIR}/QtWidgets.framework/Versions/A/QtWidgets")
@@ -49,12 +42,12 @@ foreach(_f ${QTCORE_BIN} ${QTGUI_BIN} ${QTWIDGETS_BIN})
   endif()
 endforeach()
 
-# Trova anche i frameworks per completezza (stessa cartella)
+
 find_library(QTCORE_FW    NAMES QtCore    PATHS "${PYSIDE_QT_LIBDIR}" NO_DEFAULT_PATH REQUIRED)
 find_library(QTGUI_FW     NAMES QtGui     PATHS "${PYSIDE_QT_LIBDIR}" NO_DEFAULT_PATH REQUIRED)
 find_library(QTWIDGETS_FW NAMES QtWidgets PATHS "${PYSIDE_QT_LIBDIR}" NO_DEFAULT_PATH REQUIRED)
 
-# =============== Typesystem & includes Shiboken/PySide6 ==========
+
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import os,shiboken6;print(os.path.join(os.path.dirname(shiboken6.__file__),'typesystems'))"
   OUTPUT_VARIABLE SHIBOKEN_TYPESYS
@@ -66,7 +59,6 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-# Shiboken include (runtime, poi fallback al generator)
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import os,importlib; m=importlib.import_module('shiboken6'); print(os.path.join(os.path.dirname(m.__file__),'include'))"
   OUTPUT_VARIABLE SHIBOKEN_INCLUDE_DIR
@@ -84,7 +76,7 @@ if(NOT EXISTS "${SHIBOKEN_INCLUDE_DIR}/shiboken.h")
 endif()
 message(STATUS "Shiboken include dir: ${SHIBOKEN_INCLUDE_DIR}")
 
-# Shiboken runtime library
+
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import os,glob,importlib; d=os.path.dirname(importlib.import_module('shiboken6').__file__); m=glob.glob(os.path.join(d,'libshiboken*.dylib')) or glob.glob(os.path.join(d,'libshiboken*.so*')); print(m[0] if m else '')"
   OUTPUT_VARIABLE SHIBOKEN_LIBRARY
@@ -102,7 +94,7 @@ if(NOT SHIBOKEN_LIBRARY)
 endif()
 message(STATUS "Shiboken library: ${SHIBOKEN_LIBRARY}")
 
-# PySide6 include & lib
+
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import os, PySide6; print(os.path.join(os.path.dirname(PySide6.__file__), 'include'))"
   OUTPUT_VARIABLE PYSIDE_INCLUDE_DIR
@@ -119,11 +111,11 @@ endif()
 message(STATUS "PySide library   : ${PYSIDE_LIBRARY}")
 get_filename_component(PYSIDE_LIB_DIR "${PYSIDE_LIBRARY}" DIRECTORY)
 
-# Include per shiboken (SDK Qt + tuoi header + shiboken + PySide6)
+
 set(SHIBOKEN_INCLUDE_LIST
-  "${QT_HDRSHIM}"                         # QtCore/QtGui/QtWidgets headers
-  "${PROJECT_SOURCE_DIR}/src/macos"       # tuoi header nativi
-  "${SHIBOKEN_INCLUDE_DIR}"               # shiboken.h
+  "${QT_HDRSHIM}"                   
+  "${PROJECT_SOURCE_DIR}/src/macos"       
+  "${SHIBOKEN_INCLUDE_DIR}"             
   "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"
   "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"
   "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers"
@@ -139,7 +131,7 @@ endif()
 list(JOIN SHIBOKEN_INCLUDE_LIST ":" SHIBOKEN_INCLUDE_ARG)
 message(STATUS "Shiboken include paths:\n  ${SHIBOKEN_INCLUDE_ARG}")
 
-# =============== Shiboken: codegen ================================
+
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/shiboken_out)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
@@ -173,24 +165,21 @@ if (SHIBOKEN_SRCS STREQUAL "")
   message(FATAL_ERROR "No sources generated in ${GEN_DIR}")
 endif()
 
-# =============== Estensione Python ================================
+
 add_library(_wkwebview MODULE ${SHIBOKEN_SRCS})
 target_compile_features(_wkwebview PRIVATE cxx_std_17)
 
-# Installa l’estensione nel pacchetto Python
 install(TARGETS _wkwebview
   LIBRARY DESTINATION fit_webview_bridge
   RUNTIME DESTINATION fit_webview_bridge
 )
 
-# Suffisso Python (es. .cpython-311-darwin.so)
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.so')"
   OUTPUT_VARIABLE PY_EXT_SUFFIX
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-# Include & link
 target_include_directories(_wkwebview PRIVATE
   ${GEN_DIR}
   "${PROJECT_SOURCE_DIR}/src/macos"
@@ -207,10 +196,10 @@ if(EXISTS "${PYSIDE_INCLUDE_DIR}")
   )
 endif()
 
-# CMake deve cercare nelle dir dei framework di PySide6
+
 target_link_directories(_wkwebview PRIVATE "${PYSIDE_QT_LIBDIR}")
 
-# Linka CONTRO i binari di PySide6 + shiboken + Python + lib nativa
+
 target_link_libraries(_wkwebview PRIVATE
   "${QTCORE_BIN}"
   "${QTGUI_BIN}"
@@ -221,7 +210,6 @@ target_link_libraries(_wkwebview PRIVATE
   wkwebview
 )
 
-# =============== RPATH per runtime su macOS =======================
 get_filename_component(SHIBOKEN_LIB_DIR "${SHIBOKEN_LIBRARY}" DIRECTORY)
 option(FITWVB_VENDORIZE "Vendorize PySide/Qt lookup via @loader_path" ON)
 

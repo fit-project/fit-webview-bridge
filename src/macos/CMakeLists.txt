@@ -6,22 +6,19 @@ set(CMAKE_OBJCXX_STANDARD 17)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-# Qt da aqt: serve solo per moc + headers
-# Passa -DQt6_DIR=/path/to/Qt/6.9.0/macos/lib/cmake/Qt6
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Gui Widgets)
 
-# Deriva la cartella dei frameworks (…/macos/lib) da Qt6_DIR
 get_filename_component(_qt_cmake_dir "${Qt6_DIR}" DIRECTORY)       # …/macos/lib/cmake
 get_filename_component(QT_FRAMEWORKS_DIR "${_qt_cmake_dir}" DIRECTORY) # …/macos/lib
 
-# Verifica headers
+
 foreach(_m QtCore QtGui QtWidgets)
   if(NOT EXISTS "${QT_FRAMEWORKS_DIR}/${_m}.framework/Headers")
     message(FATAL_ERROR "Missing ${_m}.framework/Headers in: ${QT_FRAMEWORKS_DIR}")
   endif()
 endforeach()
 
-# Shim include uniforme
+
 set(QT_HDRSHIM "${CMAKE_BINARY_DIR}/qt_hdrshim")
 file(MAKE_DIRECTORY "${QT_HDRSHIM}")
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"    "${QT_HDRSHIM}/QtCore"    SYMBOLIC)
@@ -42,7 +39,6 @@ target_include_directories(wkwebview PUBLIC
   ${QT_HDRSHIM}
 )
 
-# Link SOLO framework di sistema (Cocoa/WebKit). Niente Qt qui.
 target_link_libraries(wkwebview PUBLIC
   "-framework Cocoa"
   "-framework WebKit"

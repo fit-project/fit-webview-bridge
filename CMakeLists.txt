@@ -1,14 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 project(FITWebViewBridge LANGUAGES CXX)
 
-# Standard C++
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Opzione unica rimasta
 option(BUILD_BINDINGS "Build Python bindings" ON)
 
-# Dispatch per-OS: tutta la logica sta nelle sottodirectory
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
   add_subdirectory(src/macos)
   if(BUILD_BINDINGS)
