@@ -2,8 +2,8 @@ name: wheels-macos
 
 on:
   push:
-    branches: [ main ]
-    tags: ['v*']
+    tags:
+      - 'v*.*.*'
   pull_request:
   workflow_dispatch:
 
