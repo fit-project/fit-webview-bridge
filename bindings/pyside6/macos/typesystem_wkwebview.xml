@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<typesystem package="wkwebview">
+  <load-typesystem name="typesystem_core.xml"    generate="no"/>
+  <load-typesystem name="typesystem_gui.xml"     generate="no"/>
+  <load-typesystem name="typesystem_widgets.xml" generate="no"/>
+
+  <object-type name="WKWebViewWidget">
+    <include file-name="WKWebViewWidget.h" location="global"/>
+  </object-type>
+</typesystem>
+
+
