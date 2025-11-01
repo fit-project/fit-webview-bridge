@@ -22,7 +22,7 @@ struct WKWebViewWidget::Impl {
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
     emit self.owner->loadFinished(true);
-    if (webView.URL) emit self.owner->urlChanged(QUrl(QString::fromUtf8(webView.URL.absoluteString.UTF8String)));
+    if (webView.URL) emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
     if (webView.title) emit self.owner->titleChanged(QString::fromUtf8(webView.title.UTF8String));
     emit self.owner->loadProgress(100);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -43,10 +43,14 @@ struct WKWebViewWidget::Impl {
 }
 @end
 
-static NSURL* toNSURL(QString u) {
-    u = u.trimmed();
-    if (!u.startsWith("http://") && !u.startsWith("https://")) u = "https://" + u;
-    return [NSURL URLWithString:[NSString stringWithUTF8String:u.toUtf8().constData()]];
+static NSURL* toNSURL(QUrl u) {
+    if (!u.isValid()) return nil;
+    if (u.scheme().isEmpty())
+        u = QUrl::fromUserInput(u.toString());
+    if (u.isLocalFile())
+        return [NSURL fileURLWithPath:[NSString stringWithUTF8String:u.toLocalFile().toUtf8().constData()]];
+    const QByteArray enc = u.toString(QUrl::FullyEncoded).toUtf8();
+    return [NSURL URLWithString:[NSString stringWithUTF8String:enc.constData()]];
 }
 
 WKWebViewWidget::WKWebViewWidget(QWidget* parent)
@@ -66,8 +70,6 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     d->delegate = [WKNavDelegate new];
     d->delegate.owner = this;
     [d->wk setNavigationDelegate:d->delegate];
-
-    load(QStringLiteral("https://example.org"));
 }
 
 WKWebViewWidget::~WKWebViewWidget() {
@@ -77,12 +79,25 @@ WKWebViewWidget::~WKWebViewWidget() {
     delete d; d = nullptr;
 }
 
-void WKWebViewWidget::showEvent(QShowEvent* e) { QWidget::showEvent(e); /* opzionale */ }
-void WKWebViewWidget::resizeEvent(QResizeEvent* e) { QWidget::resizeEvent(e); /* opzionale */ }
+void WKWebViewWidget::showEvent(QShowEvent* e) { QWidget::showEvent(e); }
+void WKWebViewWidget::resizeEvent(QResizeEvent* e) { QWidget::resizeEvent(e); }
 
-void WKWebViewWidget::load(const QString& url) {
-    if (d && d->wk) [d->wk loadRequest:[NSURLRequest requestWithURL:toNSURL(url)]];
+QUrl WKWebViewWidget::url() const {
+    if (!(d && d->wk)) return QUrl();
+    NSURL* nsurl = d->wk.URL;
+    if (!nsurl) return QUrl();
+    const char* utf8 = nsurl.absoluteString.UTF8String;
+    if (!utf8) return QUrl();
+    return QUrl::fromEncoded(QByteArray(utf8));
 }
+
+void WKWebViewWidget::setUrl(const QUrl& u) {
+    if (!(d && d->wk)) return;
+    NSURL* nsurl = toNSURL(u);
+    if (!nsurl) return;
+    [d->wk loadRequest:[NSURLRequest requestWithURL:nsurl]];
+}
+
 void WKWebViewWidget::back()    { if (d && d->wk && d->wk.canGoBack)    [d->wk goBack]; }
 void WKWebViewWidget::forward() { if (d && d->wk && d->wk.canGoForward) [d->wk goForward]; }
 void WKWebViewWidget::stop()    { if (d && d->wk) [d->wk stopLoading:nil]; }
