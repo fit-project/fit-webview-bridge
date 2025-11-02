@@ -76,6 +76,34 @@ static NSURL* toNSURL(QUrl u);
 
 #pragma mark - Navigazione
 
+
+// 1a) Navigation: intercetta click con targetFrame == nil (tipico di _blank)
+- (void)webView:(WKWebView *)webView
+decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+{
+    // targetFrame == nil => richiesta per nuova finestra (target="_blank" o window.open)
+    if (navigationAction.targetFrame == nil || !navigationAction.targetFrame.isMainFrame) {
+        [webView loadRequest:navigationAction.request];       // carica QUI
+        decisionHandler(WKNavigationActionPolicyCancel);      // cancella la creazione nuova finestra
+        return;
+    }
+    decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+// 1b) UI: invocato quando la pagina chiede esplicitamente una nuova webview
+- (WKWebView *)webView:(WKWebView *)webView
+createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+ forNavigationAction:(WKNavigationAction *)navigationAction
+          windowFeatures:(WKWindowFeatures *)windowFeatures
+{
+    if (navigationAction.targetFrame == nil || !navigationAction.targetFrame.isMainFrame) {
+        [webView loadRequest:navigationAction.request]; // apri nella stessa webview
+    }
+    return nil; // restituisci nil per NON creare una nuova finestra
+}
+
+
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
     if (webView.URL)
