@@ -1,8 +1,10 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <objc/message.h>
 
 #include "WKWebViewWidget.h"
 #include "DownloadInfo.h"
+
 
 #include <QtWidgets>
 #include <QString>
@@ -47,7 +49,7 @@ static NSURL* toNSURL(QUrl u);
 @end
 
 // ===== WKNavDelegate =====
-@interface WKNavDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate>
+@interface WKNavDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate>
 @property(nonatomic, assign) WKWebViewWidget* owner;
 // mappe per download
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;   // weak key -> strong value
@@ -390,6 +392,21 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
         cfg.defaultWebpagePreferences.allowsContentJavaScript = YES;
     }
 
+    // --- Fullscreen HTML5 (via KVC tollerante) ---
+    @try {
+        [cfg.preferences setValue:@YES forKey:@"fullScreenEnabled"];
+    } @catch (NSException *e) {
+        // ignore if not available
+    }
+
+    // --- AirPlay & PiP via selector per compatibilità SDK ---
+    if ([cfg respondsToSelector:@selector(setAllowsAirPlayForMediaPlayback:)]) {
+        ((void(*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsAirPlayForMediaPlayback:), YES);
+    }
+    if ([cfg respondsToSelector:@selector(setAllowsPictureInPictureMediaPlayback:)]) {
+        ((void(*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsPictureInPictureMediaPlayback:), YES);
+    }
+
     // SPA: intercetta pushState/replaceState/popstate/click
     d->ucc = [WKUserContentController new];
     d->msg = [FitUrlMsgHandler new];
@@ -423,6 +440,8 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     d->delegate = [WKNavDelegate new];
     d->delegate.owner = this;
     [d->wk setNavigationDelegate:d->delegate];
+
+    [d->wk setUIDelegate:d->delegate];
 }
 
 WKWebViewWidget::~WKWebViewWidget() {
