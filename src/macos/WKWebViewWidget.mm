@@ -133,10 +133,15 @@ didBecomeDownload:(WKDownload *)download
     if (self.owner) {
         emit self.owner->downloadStarted(QString(), QString());
     }
-    // Progress via NSProgress (best effort): alcuni siti non lo popolano
-    [download.progress addObserver:self
-                        forKeyPath:@"fractionCompleted"
-                           options:NSKeyValueObservingOptionNew
+   
+    [download.progress addObserver:self forKeyPath:@"fractionCompleted"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
+                           context:NULL];
+    [download.progress addObserver:self forKeyPath:@"completedUnitCount"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
+                           context:NULL];
+    [download.progress addObserver:self forKeyPath:@"totalUnitCount"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
 }
 
@@ -153,9 +158,15 @@ didBecomeDownload:(WKDownload *)download
         emit self.owner->downloadStarted(QString::fromUtf8(suggested.UTF8String),
                                          destPath);
     }
-    [download.progress addObserver:self
-                        forKeyPath:@"fractionCompleted"
-                           options:NSKeyValueObservingOptionNew
+
+    [download.progress addObserver:self forKeyPath:@"fractionCompleted"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
+                           context:NULL];
+    [download.progress addObserver:self forKeyPath:@"completedUnitCount"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
+                           context:NULL];
+    [download.progress addObserver:self forKeyPath:@"totalUnitCount"
+                           options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
 }
 
@@ -212,22 +223,30 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)obj
                         change:(NSDictionary *)change context:(void *)ctx
 {
-    if (![keyPath isEqualToString:@"fractionCompleted"]) {
+    if (![obj isKindOfClass:[NSProgress class]] || !self.owner) {
         [super observeValueForKeyPath:keyPath ofObject:obj change:change context:ctx];
         return;
     }
-    if (!self.owner) return;
 
     NSProgress* prog = (NSProgress*)obj;
     int64_t total = prog.totalUnitCount;     // può essere -1 (sconosciuto)
     int64_t done  = prog.completedUnitCount;
-    emit self.owner->downloadProgress(done, total >= 0 ? total : -1);
+
+    // Emetti SEMPRE su main (thread-safety Qt/UI)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        emit self.owner->downloadProgress(done, (total >= 0 ? total : -1));
+    });
 }
+
 
 - (void)downloadDidFinish:(WKDownload *)download {
     if (!self.owner) return;
 
-    @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (...) {}
+    @try {
+        [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+        [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
+        [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
+    } @catch (...) {}
 
     NSString* finalPath = [self.downloadPaths objectForKey:download];
     if (finalPath) {
@@ -241,7 +260,11 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
     if (!self.owner) return;
 
-    @try { [download.progress removeObserver:self forKeyPath:@"fractionCompleted"]; } @catch (...) {}
+    @try {
+        [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+        [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
+        [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
+    } @catch (...) {}
 
    NSString* finalPath = [self.downloadPaths objectForKey:download];
     QString qpath = finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString();
