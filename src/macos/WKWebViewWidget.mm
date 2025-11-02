@@ -52,6 +52,7 @@ static NSURL* toNSURL(QUrl u);
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;   // weak key -> strong value
 @property(nonatomic, strong) NSMapTable<NSProgress*, WKDownload*>* progressToDownload; // weak->weak
 @property(nonatomic, strong) NSHashTable<NSProgress*>* completedProgresses;      // weak set
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals; // weak->strong
 @end
 
 @implementation WKNavDelegate
@@ -61,6 +62,7 @@ static NSURL* toNSURL(QUrl u);
         _downloadPaths = [NSMapTable weakToStrongObjectsMapTable];
         _progressToDownload = [NSMapTable weakToWeakObjectsMapTable];
         _completedProgresses = [NSHashTable weakObjectsHashTable];
+        _expectedTotals = [NSMapTable weakToStrongObjectsMapTable];
     }
     return self;
 }
@@ -216,6 +218,16 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         QString::fromUtf8(finalPath.UTF8String)
     );
 
+    // Leggi il Content-Length se disponibile e salvalo
+    long long expected = response.expectedContentLength; // -1 se sconosciuto
+    if (expected >= 0) {
+        [self.expectedTotals setObject:@(expected) forKey:download];
+        if (self.owner) {
+            // progress iniziale (0 di total)
+            emit self.owner->downloadProgress(0, expected);
+        }
+    }
+
     completionHandler([NSURL fileURLWithPath:finalPath]);
 }
 
@@ -230,15 +242,28 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     }
     NSProgress* prog = (NSProgress*)obj;
 
-    // ignora aggiornamenti dopo il completamento
-    if ([self.completedProgresses containsObject:prog]) return;
-
+    // Calcolo grezzo fuori dal main
     int64_t total = prog.totalUnitCount;     // -1 se sconosciuto
     int64_t done  = prog.completedUnitCount;
 
+    // Dispatch su main, ma **ricontrolla** lo stato "completed" dentro al blocco
+   // DOPO (compatibile MRC)
+    __unsafe_unretained WKNavDelegate* weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        emit self.owner->downloadProgress(done, (total >= 0 ? total : -1));
+        WKNavDelegate* strongSelf = weakSelf;
+        if (!strongSelf || !strongSelf.owner) return;
+
+        // blocca update tardivi dopo finished/failed
+        if ([strongSelf.completedProgresses containsObject:prog]) return;
+
+        WKDownload* dl = [strongSelf.progressToDownload objectForKey:prog];
+        NSNumber* exp = dl ? [strongSelf.expectedTotals objectForKey:dl] : nil;
+
+        int64_t totalEff = (total >= 0 ? total : (exp ? exp.longLongValue : -1));
+        emit strongSelf.owner->downloadProgress(done, totalEff);
     });
+
+
 }
 
 - (void)downloadDidFinish:(WKDownload *)download {
@@ -252,10 +277,12 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 
     [self.completedProgresses addObject:download.progress];
 
+
     NSString* finalPath = [self.downloadPaths objectForKey:download];
     emit self.owner->downloadFinished(finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString());
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
+    [self.expectedTotals removeObjectForKey:download]; 
 }
 
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
@@ -276,6 +303,7 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     );
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
+    [self.expectedTotals removeObjectForKey:download]; 
 }
 
 @end
