@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QUrl>
 
+#include "DownloadInfo.h"
+
 class QString; class QShowEvent; class QResizeEvent;
 
 class WKWebViewWidget : public QWidget {
@@ -36,7 +38,7 @@ signals:
 
     void downloadStarted(const QString& suggestedFilename, const QString& destinationPath);
     void downloadProgress(qint64 bytesReceived, qint64 totalBytes);
-    void downloadFinished(const QString& filePath);
+    void downloadFinished(DownloadInfo* info);
     void downloadFailed(const QString& filePath, const QString& error);
 
 protected:

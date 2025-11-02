@@ -7,6 +7,9 @@
   <object-type name="WKWebViewWidget">
     <include file-name="WKWebViewWidget.h" location="global"/>
   </object-type>
+  <object-type name="DownloadInfo">
+    <include file-name="DownloadInfo.h" location="global"/>
+  </object-type>
 </typesystem>
 
 

@@ -28,6 +28,7 @@ file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers" "${QT_HDRSHI
 add_library(wkwebview STATIC
   WKWebViewWidget.mm
   WKWebViewWidget.h
+  DownloadInfo.h
 )
 target_compile_features(wkwebview PRIVATE cxx_std_17)
 

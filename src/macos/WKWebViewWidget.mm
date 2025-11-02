@@ -2,6 +2,7 @@
 #import <WebKit/WebKit.h>
 
 #include "WKWebViewWidget.h"
+#include "DownloadInfo.h"
 
 #include <QtWidgets>
 #include <QString>
@@ -53,6 +54,8 @@ static NSURL* toNSURL(QUrl u);
 @property(nonatomic, strong) NSMapTable<NSProgress*, WKDownload*>* progressToDownload; // weak->weak
 @property(nonatomic, strong) NSHashTable<NSProgress*>* completedProgresses;      // weak set
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals; // weak->strong
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSURL*>*     sourceURLs;      // weak->strong
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>*  suggestedNames;  // weak->strong
 @end
 
 @implementation WKNavDelegate
@@ -63,6 +66,8 @@ static NSURL* toNSURL(QUrl u);
         _progressToDownload = [NSMapTable weakToWeakObjectsMapTable];
         _completedProgresses = [NSHashTable weakObjectsHashTable];
         _expectedTotals = [NSMapTable weakToStrongObjectsMapTable];
+        _sourceURLs     = [NSMapTable weakToStrongObjectsMapTable];
+        _suggestedNames = [NSMapTable weakToStrongObjectsMapTable];
     }
     return self;
 }
@@ -133,6 +138,12 @@ navigationAction:(WKNavigationAction *)navigationAction
 didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
+
+    // URL sorgente (request dell’azione)
+    if (navigationAction.request.URL) {
+        [self.sourceURLs setObject:navigationAction.request.URL forKey:download];
+    }
+
     if (self.owner) emit self.owner->downloadStarted(QString(), QString());
 
     // KVO su NSProgress (3 keyPath, con INITIAL)
@@ -154,6 +165,10 @@ navigationResponse:(WKNavigationResponse *)navigationResponse
 didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
+
+    if (navigationResponse.response.URL) {
+        [self.sourceURLs setObject:navigationResponse.response.URL forKey:download];
+    }
 
     NSString* suggested = navigationResponse.response.suggestedFilename ?: @"download";
     if (self.owner) {
@@ -228,6 +243,12 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         }
     }
 
+    if (suggestedFilename) {
+    [self.suggestedNames setObject:suggestedFilename forKey:download];
+    } else if (![self.suggestedNames objectForKey:download]) {
+        [self.suggestedNames setObject:@"download" forKey:download];
+    }
+
     completionHandler([NSURL fileURLWithPath:finalPath]);
 }
 
@@ -269,42 +290,67 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 - (void)downloadDidFinish:(WKDownload *)download {
     if (!self.owner) return;
 
+    // 1) stop KVO
     @try {
         [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
         [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
         [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
     } @catch (...) {}
 
+    // 2) marca come completato per filtrare update tardivi
     [self.completedProgresses addObject:download.progress];
 
-
+    // 3) raccogli dati
     NSString* finalPath = [self.downloadPaths objectForKey:download];
-    emit self.owner->downloadFinished(finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString());
+    NSString* fname = [self.suggestedNames objectForKey:download];
+    if (!fname && finalPath) fname = [finalPath lastPathComponent];
+    NSString* dir = finalPath ? [finalPath stringByDeletingLastPathComponent] : nil;
+    NSURL* src = [self.sourceURLs objectForKey:download];
+
+    // 4) crea DownloadInfo* e emetti
+    QString qFileName = fname ? QString::fromUtf8(fname.UTF8String) : QString();
+    QString qDir      = dir   ? QString::fromUtf8(dir.UTF8String)   : QString();
+    QUrl    qUrl      = src   ? QUrl::fromEncoded(QByteArray(src.absoluteString.UTF8String))
+                              : QUrl();
+
+    DownloadInfo* info = new DownloadInfo(qFileName, qDir, qUrl, self.owner);
+    emit self.owner->downloadFinished(info);
+
+    // 5) cleanup mappe
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
-    [self.expectedTotals removeObjectForKey:download]; 
+    [self.expectedTotals removeObjectForKey:download];
+    [self.sourceURLs removeObjectForKey:download];
+    [self.suggestedNames removeObjectForKey:download];
 }
+
 
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
     if (!self.owner) return;
 
+    // stop KVO
     @try {
         [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
         [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
         [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
     } @catch (...) {}
-
     [self.completedProgresses addObject:download.progress];
 
+    // path (se già deciso)
     NSString* finalPath = [self.downloadPaths objectForKey:download];
     emit self.owner->downloadFailed(
         finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString(),
         QString::fromUtf8(error.localizedDescription.UTF8String)
     );
+
+    // cleanup mappe
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
-    [self.expectedTotals removeObjectForKey:download]; 
+    [self.expectedTotals removeObjectForKey:download];
+    [self.sourceURLs removeObjectForKey:download];
+    [self.suggestedNames removeObjectForKey:download];
 }
+
 
 @end
 
