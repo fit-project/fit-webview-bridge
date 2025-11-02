@@ -82,12 +82,7 @@ static NSURL* toNSURL(QUrl u);
 decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
 decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
 {
-    // targetFrame == nil => richiesta per nuova finestra (target="_blank" o window.open)
-    if (navigationAction.targetFrame == nil || !navigationAction.targetFrame.isMainFrame) {
-        [webView loadRequest:navigationAction.request];       // carica QUI
-        decisionHandler(WKNavigationActionPolicyCancel);      // cancella la creazione nuova finestra
-        return;
-    }
+    // Se è un _blank, no-op qui: ci pensa createWebView... (sopra)
     decisionHandler(WKNavigationActionPolicyAllow);
 }
 

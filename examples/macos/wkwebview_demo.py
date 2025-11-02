@@ -33,7 +33,7 @@ class Main(QMainWindow):
         self.view.titleChanged.connect(self.setWindowTitle)
         self.view.loadProgress.connect(lambda p: print("progress:", p))
 
-        self.view.setUrl(QUrl("http://fit-project.org/"))
+        self.view.setUrl(QUrl("https://web.whatsapp.com/"))
 
 
 app = QApplication([])
