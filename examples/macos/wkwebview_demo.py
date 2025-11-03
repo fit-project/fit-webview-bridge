@@ -11,6 +11,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QVBoxLayout,
@@ -27,7 +28,7 @@ except Exception:
     from _wkwebview import WKWebViewWidget
 
 
-HOME_URL = "https://google.it"
+HOME_URL = "https://github.com/fit-project"
 
 
 class Main(QMainWindow):
@@ -38,15 +39,21 @@ class Main(QMainWindow):
         root = QVBoxLayout(central)
         self.setCentralWidget(central)
 
-        # --- toolbar semplice ---
+        # --- toolbar: back/forward/home + address bar + go ---
         bar = QHBoxLayout()
         self.btnBack = QPushButton("◀︎ Back")
         self.btnFwd = QPushButton("Forward ▶︎")
         self.btnHome = QPushButton("🏠 Home")
+
+        self.address = QLineEdit()  # ← barra indirizzi
+        self.address.setPlaceholderText("Digita un URL o una ricerca…")
+        self.btnGo = QPushButton("Go")
+
         bar.addWidget(self.btnBack)
         bar.addWidget(self.btnFwd)
         bar.addWidget(self.btnHome)
-        bar.addStretch(1)
+        bar.addWidget(self.address, 1)  # ← occupa spazio elastico
+        bar.addWidget(self.btnGo)
         root.addLayout(bar)
 
         # --- webview ---
@@ -68,6 +75,20 @@ class Main(QMainWindow):
         self.btnFwd.clicked.connect(self.view.forward)
         self.btnHome.clicked.connect(lambda: self.view.setUrl(QUrl(HOME_URL)))
 
+        # --- address bar: invio / bottone Go ---
+        def navigate_from_address():
+            text = (self.address.text() or "").strip()
+            if not text:
+                return
+            url = QUrl.fromUserInput(text)  # gestisce http/https, domini, file, ecc.
+            self.view.setUrl(url)
+
+        self.address.returnPressed.connect(navigate_from_address)
+        self.btnGo.clicked.connect(navigate_from_address)
+
+        # mantieni sincronizzata la barra con la URL corrente
+        self.view.urlChanged.connect(lambda u: self.address.setText(u.toString()))
+
         # --- eventi download: print semplici ---
         self.view.downloadStarted.connect(
             lambda name, path: print(f"[download] started: name='{name}' path='{path}'")
@@ -82,7 +103,6 @@ class Main(QMainWindow):
         )
 
         def on_finished(info):
-            # Proviamo a leggere i getter se disponibili; fallback a repr
             try:
                 fname = info.fileName() if hasattr(info, "fileName") else None
                 directory = info.directory() if hasattr(info, "directory") else None
@@ -98,8 +118,9 @@ class Main(QMainWindow):
 
         self.view.downloadFinished.connect(on_finished)
 
-        # carica home
+        # carica home e imposta barra
         self.view.setUrl(QUrl(HOME_URL))
+        self.address.setText(HOME_URL)
 
 
 if __name__ == "__main__":

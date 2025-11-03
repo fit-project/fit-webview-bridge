@@ -1,6 +1,6 @@
 [project]
 name = "fit-webview-bridge"
-version = "0.2.3a1"
+version = "0.2.3a2"
 description = "Qt native WebView bridge with PySide6 bindings"
 requires-python = ">=3.11,<3.14"
 dependencies = ["PySide6==6.9.0", "shiboken6==6.9.0", "shiboken6-generator==6.9.0"]

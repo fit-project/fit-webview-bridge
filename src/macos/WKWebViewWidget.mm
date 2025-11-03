@@ -73,6 +73,8 @@ static NSURL* toNSURL(QUrl u);
 @end
 
 
+static inline NSString* FITURLStr(NSURL *u) { return u ? u.absoluteString : @"(nil)"; }
+
 static NSString* FIT_CurrentLang(void) {
     NSString *lang = NSLocale.preferredLanguages.firstObject ?: @"en";
     // normalizza es. "it-IT" -> "it"
@@ -299,6 +301,9 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals; // weak->strong
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSURL*>*     sourceURLs;      // weak->strong
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>*  suggestedNames;  // weak->strong
+@property(nonatomic, strong) NSURL* pendingPopupParentURL;
+@property(nonatomic, strong) NSURL* pendingPopupChildURL;
+@property(nonatomic, assign) WKWebView* webView;
 @end
 
 @implementation WKNavDelegate
@@ -316,16 +321,14 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 }
 
 #pragma mark - Navigazione
-
-
 // 1a) Navigation: intercetta click con targetFrame == nil (tipico di _blank)
 - (void)webView:(WKWebView *)webView
 decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
 decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
 {
-    // Se è un _blank, no-op qui: ci pensa createWebView... (sopra)
     decisionHandler(WKNavigationActionPolicyAllow);
 }
+
 
 // 1b) UI: invocato quando la pagina chiede esplicitamente una nuova webview
 - (WKWebView *)webView:(WKWebView *)webView
@@ -334,8 +337,23 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
           windowFeatures:(WKWindowFeatures *)windowFeatures
 {
     if (navigationAction.targetFrame == nil || !navigationAction.targetFrame.isMainFrame) {
-        [webView loadRequest:navigationAction.request]; // apri nella stessa webview
+        NSURL *parent = webView.URL;
+        NSURL *child  = navigationAction.request.URL;
+
+        // salva coppia padre/figlio per il “ritorno” post-download
+        self.pendingPopupParentURL = parent;
+        self.pendingPopupChildURL  = child;
+
+        // ---- LOG (NSLog) ----
+        NSString *p = parent.absoluteString ?: @"(nil)";
+        NSString *c = child.absoluteString  ?: @"(nil)";
+        NSLog(@"[FIT][Popup] parent=%@  child=%@", p, c);
+
+        if (child) {
+            [webView loadRequest:navigationAction.request];   // apri nella stessa webview
+        }
     }
+
     return nil; // restituisci nil per NON creare una nuova finestra
 }
 
@@ -390,10 +408,27 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
 decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
 {
+    NSURLResponse *resp = navigationResponse.response;
+    NSURL *url = resp.URL;
+
+    BOOL isAttachment = NO;
+    if ([resp isKindOfClass:NSHTTPURLResponse.class]) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
+        NSString *cd = http.allHeaderFields[@"Content-Disposition"];
+        if (cd && [[cd lowercaseString] containsString:@"attachment"]) {
+            isAttachment = YES;
+        }
+    }
+
+    if (isAttachment) {
+        decisionHandler(WKNavigationResponsePolicyDownload);
+        return;
+    }
+
     if (navigationResponse.canShowMIMEType) {
         decisionHandler(WKNavigationResponsePolicyAllow);
     } else {
-        decisionHandler(WKNavigationResponsePolicyDownload); // API moderna
+        decisionHandler(WKNavigationResponsePolicyDownload);
     }
 }
 
@@ -582,6 +617,52 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     DownloadInfo* info = new DownloadInfo(qFileName, qDir, qUrl, self.owner);
     emit self.owner->downloadFinished(info);
 
+    
+
+    WKWebView *webView = self.webView;
+    NSURL *srcURL = [self.sourceURLs objectForKey:download];
+
+    NSLog(@"[FIT][DL] src=%@  child=%@  parent=%@  current=%@",
+        srcURL.absoluteString ?: @"(nil)",
+        self.pendingPopupChildURL.absoluteString ?: @"(nil)",
+        self.pendingPopupParentURL.absoluteString ?: @"(nil)",
+        webView.URL.absoluteString ?: @"(nil)");
+
+    if (webView && self.pendingPopupChildURL && srcURL &&
+        [srcURL isEqual:self.pendingPopupChildURL]) {
+
+        WKBackForwardList *bf = webView.backForwardList;
+        NSURL *current = webView.URL;
+        NSURL *backURL = bf.backItem.URL;
+
+        // CASI:
+        // A) Sei sul FIGLIO → torna indietro alla PARENT
+        if (current && [current isEqual:self.pendingPopupChildURL]) {
+            NSLog(@"[FIT][DL] current==child → goBack()");
+            [webView goBack];
+        }
+        // B) Sei già sulla PARENT → non fare nulla
+        else if (current && [current isEqual:self.pendingPopupParentURL]) {
+            NSLog(@"[FIT][DL] current==parent → no-op");
+            // niente
+        }
+        // C) Non sei sul child, ma l’item precedente è la PARENT → goBack
+        else if (backURL && [backURL isEqual:self.pendingPopupParentURL]) {
+            NSLog(@"[FIT][DL] backItem==parent → goBack()");
+            [webView goBack];
+        }
+        // D) Fallback: carica esplicitamente la PARENT
+        else if (self.pendingPopupParentURL) {
+            NSLog(@"[FIT][DL] fallback loadRequest(parent) → %@", self.pendingPopupParentURL.absoluteString);
+            [webView loadRequest:[NSURLRequest requestWithURL:self.pendingPopupParentURL]];
+        } else {
+            NSLog(@"[FIT][DL] nessuna parent disponibile → no-op");
+        }
+
+        // pulizia stato
+        self.pendingPopupChildURL = nil;
+        self.pendingPopupParentURL = nil;
+    }
     // 5) cleanup mappe
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
@@ -608,6 +689,20 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString(),
         QString::fromUtf8(error.localizedDescription.UTF8String)
     );
+
+    // 🔙 Se il download proviene dal "figlio", torna alla "pagina padre"
+    WKWebView *webView = self.webView;
+    NSURL *src = [self.sourceURLs objectForKey:download];
+    if (webView && self.pendingPopupChildURL && src && [src isEqual:self.pendingPopupChildURL]) {
+        if (webView.canGoBack) {
+            [webView goBack];
+        } else if (self.pendingPopupParentURL) {
+            [webView loadRequest:[NSURLRequest requestWithURL:self.pendingPopupParentURL]];
+        }
+        // ripulisci lo stato
+        self.pendingPopupChildURL = nil;
+        self.pendingPopupParentURL = nil;
+    }
 
     // cleanup mappe
     if (finalPath) [self.downloadPaths removeObjectForKey:download];
@@ -655,6 +750,11 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     if ([cfg respondsToSelector:@selector(defaultWebpagePreferences)]) {
         cfg.defaultWebpagePreferences.allowsContentJavaScript = YES;
     }
+
+    // ✅ Consenti window.open() senza creare una nuova finestra UI
+    @try {
+        cfg.preferences.javaScriptCanOpenWindowsAutomatically = YES;
+    } @catch (...) {}
 
     // --- Fullscreen HTML5 (via KVC tollerante) ---
     @try {
@@ -722,8 +822,8 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     d->delegate = [WKNavDelegate new];
     d->delegate.owner = this;
+    d->delegate.webView = d->wk;
     [d->wk setNavigationDelegate:d->delegate];
-
     [d->wk setUIDelegate:d->delegate];
 }
 
