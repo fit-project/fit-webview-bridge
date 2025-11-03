@@ -343,12 +343,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
         // salva coppia padre/figlio per il “ritorno” post-download
         self.pendingPopupParentURL = parent;
         self.pendingPopupChildURL  = child;
-
-        // ---- LOG (NSLog) ----
-        NSString *p = parent.absoluteString ?: @"(nil)";
-        NSString *c = child.absoluteString  ?: @"(nil)";
-        NSLog(@"[FIT][Popup] parent=%@  child=%@", p, c);
-
+        
         if (child) {
             [webView loadRequest:navigationAction.request];   // apri nella stessa webview
         }
@@ -622,12 +617,6 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     WKWebView *webView = self.webView;
     NSURL *srcURL = [self.sourceURLs objectForKey:download];
 
-    NSLog(@"[FIT][DL] src=%@  child=%@  parent=%@  current=%@",
-        srcURL.absoluteString ?: @"(nil)",
-        self.pendingPopupChildURL.absoluteString ?: @"(nil)",
-        self.pendingPopupParentURL.absoluteString ?: @"(nil)",
-        webView.URL.absoluteString ?: @"(nil)");
-
     if (webView && self.pendingPopupChildURL && srcURL &&
         [srcURL isEqual:self.pendingPopupChildURL]) {
 
@@ -638,25 +627,21 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         // CASI:
         // A) Sei sul FIGLIO → torna indietro alla PARENT
         if (current && [current isEqual:self.pendingPopupChildURL]) {
-            NSLog(@"[FIT][DL] current==child → goBack()");
             [webView goBack];
         }
         // B) Sei già sulla PARENT → non fare nulla
         else if (current && [current isEqual:self.pendingPopupParentURL]) {
-            NSLog(@"[FIT][DL] current==parent → no-op");
             // niente
         }
         // C) Non sei sul child, ma l’item precedente è la PARENT → goBack
         else if (backURL && [backURL isEqual:self.pendingPopupParentURL]) {
-            NSLog(@"[FIT][DL] backItem==parent → goBack()");
             [webView goBack];
         }
         // D) Fallback: carica esplicitamente la PARENT
         else if (self.pendingPopupParentURL) {
-            NSLog(@"[FIT][DL] fallback loadRequest(parent) → %@", self.pendingPopupParentURL.absoluteString);
             [webView loadRequest:[NSURLRequest requestWithURL:self.pendingPopupParentURL]];
         } else {
-            NSLog(@"[FIT][DL] nessuna parent disponibile → no-op");
+            //Niente
         }
 
         // pulizia stato
