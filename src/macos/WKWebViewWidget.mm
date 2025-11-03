@@ -6,6 +6,36 @@
 #include "DownloadInfo.h"
 
 
+static inline void fit_emit_downloadStarted(WKWebViewWidget* owner,
+                                            const QString& name,
+                                            const QString& path) {
+    if (!owner) return;
+    QMetaObject::invokeMethod(owner, [owner, name, path]{
+        emit owner->downloadStarted(name, path);
+    }, Qt::QueuedConnection);
+}
+
+static inline void fit_emit_downloadFailed(WKWebViewWidget* owner,
+                                           const QString& path,
+                                           const QString& err) {
+    if (!owner) return;
+    QMetaObject::invokeMethod(owner, [owner, path, err]{
+        emit owner->downloadFailed(path, err);
+    }, Qt::QueuedConnection);
+}
+
+static inline void fit_emit_downloadFinished(WKWebViewWidget* owner,
+                                             const QString& fileName,
+                                             const QString& dir,
+                                             const QUrl& src) {
+    if (!owner) return;
+    QMetaObject::invokeMethod(owner, [owner, fileName, dir, src]{
+        auto *info = new DownloadInfo(fileName, dir, src, owner);
+        emit owner->downloadFinished(info);
+    }, Qt::QueuedConnection);
+}
+
+
 #include <QtWidgets>
 #include <QString>
 #include <QUrl>
@@ -35,18 +65,229 @@ static NSURL* toNSURL(QUrl u);
 // =======================
 @interface FitUrlMsgHandler : NSObject <WKScriptMessageHandler>
 @property(nonatomic, assign) WKWebViewWidget* owner;
+@property(nonatomic, assign) WKWebView* webView;
+
+- (void)_fitShowContextMenuFromPayload:(NSDictionary*)payload;
+- (void)_fitOpenLink:(NSMenuItem*)item;
+- (void)_fitCopyURL:(NSMenuItem*)item;
 @end
 
+
+static NSString* FIT_CurrentLang(void) {
+    NSString *lang = NSLocale.preferredLanguages.firstObject ?: @"en";
+    // normalizza es. "it-IT" -> "it"
+    NSRange dash = [lang rangeOfString:@"-"];
+    return (dash.location != NSNotFound) ? [lang substringToIndex:dash.location] : lang;
+}
+
+static NSString* FIT_T(NSString* key) {
+    static NSDictionary *en, *it;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        en = @{
+            @"menu.openLink":     @"Open link",
+            @"menu.copyLink":     @"Copy link address",
+            @"menu.openImage":    @"Open image",
+            @"menu.copyImageURL": @"Copy image URL",
+            @"menu.downloadImage":@"Download image…",
+        };
+        it = @{
+            @"menu.openLink":     @"Apri link",
+            @"menu.copyLink":     @"Copia indirizzo link",
+            @"menu.openImage":    @"Apri immagine",
+            @"menu.copyImageURL": @"Copia URL immagine",
+            @"menu.downloadImage":@"Scarica immagine…",
+        };
+    });
+    NSString *lang = FIT_CurrentLang();
+    NSDictionary *tbl = [lang isEqualToString:@"it"] ? it : en;
+    return tbl[key] ?: en[key] ?: key;
+}
+
 @implementation FitUrlMsgHandler
+
+// Helpers per sanity-check su tipi da payload
+static inline NSString* FITStringOrNil(id obj) {
+    return [obj isKindOfClass:NSString.class] ? (NSString*)obj : nil;
+}
+static inline NSNumber* FITNumberOrNil(id obj) {
+    return [obj isKindOfClass:NSNumber.class] ? (NSNumber*)obj : nil;
+}
+
 - (void)userContentController:(WKUserContentController *)userContentController
-      didReceiveScriptMessage:(WKScriptMessage *)message {
+      didReceiveScriptMessage:(WKScriptMessage *)message
+{
     if (!self.owner) return;
-    if (![message.name isEqualToString:@"fitUrlChanged"]) return;
-    if (![message.body isKindOfClass:[NSString class]]) return;
-    QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
-    emit self.owner->urlChanged(QUrl::fromEncoded(s.toUtf8()));
+
+    if ([message.name isEqualToString:@"fitUrlChanged"]) {
+        if (![message.body isKindOfClass:[NSString class]]) return;
+        QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
+        emit self.owner->urlChanged(QUrl::fromEncoded(s.toUtf8()));
+        return;
+    }
+
+    if ([message.name isEqualToString:@"fitContextMenu"]) {
+        if (![message.body isKindOfClass:[NSDictionary class]]) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self _fitShowContextMenuFromPayload:(NSDictionary*)message.body];
+        });
+        return;
+    }
+}
+
+- (void)_fitShowContextMenuFromPayload:(NSDictionary*)payload
+{
+    WKWebView* wv = self.webView;
+    if (!wv || !wv.window) return;
+
+    NSString *linkStr = FITStringOrNil(payload[@"link"]);
+    NSString *imgStr  = FITStringOrNil(payload[@"image"]);
+    NSURL *linkURL = (linkStr.length ? [NSURL URLWithString:linkStr] : nil);
+    NSURL *imgURL  = (imgStr.length  ? [NSURL URLWithString:imgStr]  : nil);
+    if (!linkURL && !imgURL) return;
+
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+
+    if (linkURL) {
+        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openLink")
+                                              action:@selector(_fitOpenLink:)
+                                       keyEquivalent:@""];
+        open.target = self; open.representedObject = @{@"url": linkURL};
+        [menu addItem:open];
+
+        NSMenuItem *copy = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyLink")
+                                              action:@selector(_fitCopyURL:)
+                                       keyEquivalent:@""];
+        copy.target = self; copy.representedObject = @{@"url": linkURL};
+        [menu addItem:copy];
+    }
+
+    if (imgURL) {
+        NSMenuItem *openImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openImage")
+                                                 action:@selector(_fitOpenLink:)
+                                          keyEquivalent:@""];
+        openImg.target = self; openImg.representedObject = @{@"url": imgURL};
+        [menu addItem:openImg];
+
+        NSMenuItem *copyImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyImageURL")
+                                                 action:@selector(_fitCopyURL:)
+                                          keyEquivalent:@""];
+        copyImg.target = self; copyImg.representedObject = @{@"url": imgURL};
+        [menu addItem:copyImg];
+
+        NSMenuItem *dlImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.downloadImage")
+                                               action:@selector(_fitDownloadImage:)
+                                        keyEquivalent:@""];
+        dlImg.target = self;
+        dlImg.representedObject = @{@"url": imgURL};
+        [menu addItem:[NSMenuItem separatorItem]];
+        [menu addItem:dlImg];
+    }
+
+    NSPoint mouseOnScreen = [NSEvent mouseLocation];
+    NSPoint inWindow = [wv.window convertPointFromScreen:mouseOnScreen];
+    NSPoint inView = [wv convertPoint:inWindow fromView:nil];
+
+    [menu popUpMenuPositioningItem:nil atLocation:inView inView:wv];
+}
+
+- (void)_fitOpenLink:(NSMenuItem*)item {
+    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
+    if (!url || !self.webView) return;
+    [self.webView loadRequest:[NSURLRequest requestWithURL:url]];
+}
+
+- (void)_fitCopyURL:(NSMenuItem*)item {
+    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
+    if (!url) return;
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setString:url.absoluteString forType:NSPasteboardTypeString];
+}
+
+// Utility: crea nome unico in una cartella
+static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
+    NSString* fname = filename.length ? filename : @"download";
+    NSString* path = [baseDir stringByAppendingPathComponent:fname];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:path]) return path;
+
+    NSString* name = [fname stringByDeletingPathExtension];
+    NSString* ext  = [fname pathExtension];
+    for (NSUInteger i = 1; i < 10000; ++i) {
+        NSString* cand = ext.length
+        ? [NSString stringWithFormat:@"%@ (%lu).%@", name, (unsigned long)i, ext]
+        : [NSString stringWithFormat:@"%@ (%lu)", name, (unsigned long)i];
+        NSString* candPath = [baseDir stringByAppendingPathComponent:cand];
+        if (![fm fileExistsAtPath:candPath]) return candPath;
+    }
+    return path;
+}
+
+// Scarica un URL (usato dall’azione immagine)
+- (void)_fitDownloadURL:(NSURL *)url suggestedName:(NSString *)suggestedName {
+    if (!url || !self.owner) return;
+
+    // cartella destinazione da Qt
+    QString qdir = self.owner->downloadDirectory();
+    NSString *destDir = [NSString stringWithUTF8String:qdir.toUtf8().constData()];
+    if (!destDir.length) destDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:destDir
+                              withIntermediateDirectories:YES
+                                               attributes:nil error:nil];
+
+    // nome iniziale
+    NSString *fname = suggestedName.length ? suggestedName : (url.lastPathComponent.length ? url.lastPathComponent : @"download");
+    NSString *tmpTarget = fit_uniquePath(destDir, fname);
+
+    // segnala start (nome provvisorio)
+    fit_emit_downloadStarted(self.owner,
+                             QString::fromUtf8([tmpTarget lastPathComponent].UTF8String),
+                             QString::fromUtf8(tmpTarget.UTF8String));
+
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    NSURLSessionDownloadTask *task =
+    [session downloadTaskWithURL:url
+               completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error)
+    {
+        if (error) {
+            fit_emit_downloadFailed(self.owner,
+                QString::fromUtf8(tmpTarget.UTF8String),
+                QString::fromUtf8(error.localizedDescription.UTF8String));
+            return;
+        }
+
+        // usa il suggerimento del server se c’è
+        NSString *serverName = response.suggestedFilename.length ? response.suggestedFilename : [tmpTarget lastPathComponent];
+        NSString *finalPath  = fit_uniquePath(destDir, serverName);
+
+        NSError *mvErr = nil;
+        [[NSFileManager defaultManager] moveItemAtURL:location
+                                                toURL:[NSURL fileURLWithPath:finalPath]
+                                                error:&mvErr];
+        if (mvErr) {
+            fit_emit_downloadFailed(self.owner,
+                QString::fromUtf8(finalPath.UTF8String),
+                QString::fromUtf8(mvErr.localizedDescription.UTF8String));
+            return;
+        }
+
+        QUrl qsrc = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
+        fit_emit_downloadFinished(self.owner,
+            QString::fromUtf8([finalPath lastPathComponent].UTF8String),
+            QString::fromUtf8([finalPath stringByDeletingLastPathComponent].UTF8String),
+            qsrc);
+    }];
+    [task resume];
+}
+
+- (void)_fitDownloadImage:(NSMenuItem*)item {
+    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
+    [self _fitDownloadURL:url suggestedName:nil];
 }
 @end
+
 
 // ===== WKNavDelegate =====
 @interface WKNavDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate>
@@ -435,6 +676,7 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     d->msg = [FitUrlMsgHandler new];
     d->msg.owner = this;
     [d->ucc addScriptMessageHandler:d->msg name:@"fitUrlChanged"];
+    [d->ucc addScriptMessageHandler:d->msg name:@"fitContextMenu"];
 
     NSString* js =
         @"(function(){"
@@ -447,7 +689,24 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
         @"    if (!a) return; if (a.target === '_blank' || a.hasAttribute('download')) return;"
         @"    setTimeout(emit, 0);"
         @"  }, true);"
+        @"})();"
+        @"(function(){"
+        @"  document.addEventListener('contextmenu', function(ev){"
+        @"    var el = ev.target;"
+        @"    var a = el && el.closest ? el.closest('a[href]') : null;"
+        @"    var img = el && el.closest ? el.closest('img[src]') : null;"
+        @"    if (!a && !img) return;"   // lascia il menu nativo altrove
+        @"    ev.preventDefault();"
+        @"    try {"
+        @"      window.webkit.messageHandlers.fitContextMenu.postMessage({"
+        @"        x: ev.clientX, y: ev.clientY,"
+        @"        link: a ? a.href : null,"
+        @"        image: img ? img.src : null"
+        @"      });"
+        @"    } catch(e){}"
+        @"  }, true);"
         @"})();";
+
 
     WKUserScript* us = [[WKUserScript alloc]
         initWithSource:js
@@ -458,6 +717,7 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     d->wk = [[WKWebView alloc] initWithFrame:nsParent.bounds configuration:cfg];
     d->wk.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [d->msg setWebView:d->wk];
     [nsParent addSubview:d->wk];
 
     d->delegate = [WKNavDelegate new];
@@ -472,6 +732,7 @@ WKWebViewWidget::~WKWebViewWidget() {
 
     if (d->ucc && d->msg) {
         @try { [d->ucc removeScriptMessageHandlerForName:@"fitUrlChanged"]; } @catch (...) {}
+        @try { [d->ucc removeScriptMessageHandlerForName:@"fitContextMenu"]; } @catch (...) {}
     }
     d->msg = nil;
 
