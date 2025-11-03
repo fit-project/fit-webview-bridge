@@ -92,6 +92,10 @@ static NSString* FIT_T(NSString* key) {
             @"menu.openImage":    @"Open image",
             @"menu.copyImageURL": @"Copy image URL",
             @"menu.downloadImage":@"Download image…",
+            @"error.title":    @"Can’t load this page",
+            @"error.reason":   @"The site may not exist or be temporarily unreachable.",
+            @"error.retry":    @"Retry",
+            @"error.close":    @"Close",
         };
         it = @{
             @"menu.openLink":     @"Apri link",
@@ -99,6 +103,10 @@ static NSString* FIT_T(NSString* key) {
             @"menu.openImage":    @"Apri immagine",
             @"menu.copyImageURL": @"Copia URL immagine",
             @"menu.downloadImage":@"Scarica immagine…",
+            @"error.title":    @"Impossibile caricare la pagina",
+            @"error.reason":   @"Il sito potrebbe essere inesistente o momentaneamente non raggiungibile.",
+            @"error.retry":    @"Riprova",
+            @"error.close":    @"Chiudi",
         };
     });
     NSString *lang = FIT_CurrentLang();
@@ -343,7 +351,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
         // salva coppia padre/figlio per il “ritorno” post-download
         self.pendingPopupParentURL = parent;
         self.pendingPopupChildURL  = child;
-        
+
         if (child) {
             [webView loadRequest:navigationAction.request];   // apri nella stessa webview
         }
@@ -351,6 +359,26 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 
     return nil; // restituisci nil per NON creare una nuova finestra
 }
+
+
+- (void)webView:(WKWebView *)webView
+didFailProvisionalNavigation:(WKNavigation *)navigation
+       withError:(NSError *)error
+{
+    if (!self.owner) return;
+    emit self.owner->loadFinished(false);
+    emit self.owner->loadProgress(0);
+    emit self.owner->canGoBackChanged(webView.canGoBack);
+    emit self.owner->canGoForwardChanged(webView.canGoForward);
+
+    QUrl qurl = webView.URL
+        ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String))
+        : QUrl();
+    self.owner->renderErrorPage(qurl,
+        QString::fromUtf8(error.localizedDescription.UTF8String),
+        /*httpStatus*/ 0);
+}
+
 
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
@@ -395,6 +423,13 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
     emit self.owner->loadProgress(0);
     emit self.owner->canGoBackChanged(webView.canGoBack);
     emit self.owner->canGoForwardChanged(webView.canGoForward);
+    // Mostra pagina d'errore interna
+    QUrl qurl = webView.URL
+    ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String))
+    : QUrl();
+    self.owner->renderErrorPage(qurl,
+    QString::fromUtf8(error.localizedDescription.UTF8String),
+    /*httpStatus*/ 0);
 }
 
 #pragma mark - Decide download vs render
@@ -413,6 +448,15 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
         if (cd && [[cd lowercaseString] containsString:@"attachment"]) {
             isAttachment = YES;
         }
+        // 🔎 Se è main frame e status HTTP >= 400, mostra pagina d'errore custom
+       if (navigationResponse.isForMainFrame && http.statusCode >= 400 && self.owner) {
+           QUrl qurl = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
+           self.owner->renderErrorPage(qurl,
+               QStringLiteral(""),             // reason generica localizzata dal template
+                (int)http.statusCode);
+            decisionHandler(WKNavigationResponsePolicyCancel);
+           return;
+       }
     }
 
     if (isAttachment) {
@@ -874,4 +918,87 @@ void WKWebViewWidget::setDownloadDirectory(const QString& dirPath) {
     if (p.isEmpty()) return;
     QDir().mkpath(p);
     d->downloadDir = p;
+}
+
+void WKWebViewWidget::renderErrorPage(const QUrl& url,
+                                      const QString& reason,
+                                      int httpStatus)
+{
+    if (!(d && d->wk)) return;
+
+    // Template HTML minimale, con testo bilingue (IT/EN tramite FIT_T).
+    // Segnaposti: {url}, {reason}, {status}, {title}, {retry}, {close}
+   QString html = QString::fromUtf8(
+        R"FWB(<!doctype html><html lang="it"><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>{title}</title>
+        <style>
+        :root { color-scheme: light dark; }
+        html,body{height:100%}
+        body{
+            font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
+            margin:0;background:#fff;color:#000
+        }
+        @media (prefers-color-scheme: dark){
+            body{background:#000;color:#fff}
+        }
+        .card{
+            max-width:720px;margin:8vh auto;padding:28px;border-radius:16px;
+            background:#fff;color:#000;box-shadow:0 6px 24px rgba(0,0,0,.18)
+        }
+        @media (prefers-color-scheme: dark){
+            .card{background:#111;color:#eee;box-shadow:0 6px 24px rgba(255,255,255,.05)}
+        }
+        h1{font-size:22px;margin:0 0 6px}
+        p{line-height:1.5}
+        code{
+            background:#eee;color:#000;padding:2px 6px;border-radius:6px
+        }
+        @media (prefers-color-scheme: dark){
+            code{background:#222;color:#fff}
+        }
+        .actions{margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}
+        button,a{
+            padding:10px 14px;border-radius:10px;border:1px solid currentColor;
+            cursor:pointer;text-decoration:none;background:transparent;color:inherit
+        }
+        button.primary{
+            background:#000;color:#fff;border-color:#000
+        }
+        @media (prefers-color-scheme: dark){
+            button.primary{background:#fff;color:#000;border-color:#fff}
+        }
+        small{opacity:.7}
+        </style>
+        <div class="card">
+        <h1>{title}</h1>
+        <p>URL: <code>{url}</code></p>
+        <p>{reason} <small>{status}</small></p>
+        <div class="actions">
+            <button class="primary" onclick="location.reload()">{retry}</button>
+            <a class="ghost" href="about:blank">{close}</a>
+        </div>
+        </div>)FWB"
+    );
+
+
+
+    // Localizza con FIT_T
+    QString title = QString::fromUtf8([FIT_T(@"error.title") UTF8String]);
+    QString reasonText = reason.isEmpty()
+        ? QString::fromUtf8([FIT_T(@"error.reason") UTF8String])
+        : reason;
+    QString retry = QString::fromUtf8([FIT_T(@"error.retry") UTF8String]);
+    QString close = QString::fromUtf8([FIT_T(@"error.close") UTF8String]);
+
+    html.replace("{title}",  title);
+    html.replace("{url}",    url.toString());
+    html.replace("{reason}", reasonText);
+    html.replace("{status}", httpStatus > 0 ? QString("HTTP %1").arg(httpStatus) : QString());
+    html.replace("{retry}",  retry);
+    html.replace("{close}",  close);
+
+    // Carica l'HTML direttamente nella webview
+    [d->wk loadHTMLString:[NSString stringWithUTF8String:html.toUtf8().constData()]
+                  baseURL:[NSURL URLWithString:@"about:blank"]];
 }

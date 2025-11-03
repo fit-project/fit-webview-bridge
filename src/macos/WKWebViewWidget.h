@@ -26,6 +26,7 @@ public:
 
     Q_INVOKABLE void setDownloadDirectory(const QString& dirPath);
     Q_INVOKABLE QString downloadDirectory() const;
+    void renderErrorPage(const QUrl& url, const QString& reason, int httpStatus);
 
 signals:
     void loadFinished(bool ok);
@@ -34,6 +35,7 @@ signals:
     void loadProgress(int percent);
     void canGoBackChanged(bool);
     void canGoForwardChanged(bool);
+    
 
 
     void downloadStarted(const QString& suggestedFilename, const QString& destinationPath);
