@@ -28,6 +28,12 @@ public:
     Q_INVOKABLE QString downloadDirectory() const;
     void renderErrorPage(const QUrl& url, const QString& reason, int httpStatus);
 
+     // ==== USER AGENT ====
+    Q_INVOKABLE void setUserAgent(const QString& ua);       // UA completo
+    Q_INVOKABLE QString userAgent() const;                  // restituisce l’override (se presente)
+    Q_INVOKABLE void resetUserAgent();                      // rimuove l’override
+    Q_INVOKABLE void setApplicationNameForUserAgent(const QString& appName); // opzionale
+
 signals:
     void loadFinished(bool ok);
     void urlChanged(const QUrl& url);
@@ -49,4 +55,7 @@ protected:
 
 private:
     struct Impl; Impl* d = nullptr;
+
+     // --- NEW: helper che applica UA
+    void applyUserAgent();
 };

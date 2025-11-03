@@ -53,6 +53,10 @@ struct WKWebViewWidget::Impl {
     WKUserContentController* ucc       = nil;
     FitUrlMsgHandler*        msg       = nil;
     QString                  downloadDir; // es. ~/Downloads
+
+    // --- UA ---
+    QString                  customUA;  // override UA (se non vuoto)
+    QString                  appUA;     // suffix via configuration (opzionale)
 };
 
 // =======================
@@ -854,6 +858,8 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     d->delegate.webView = d->wk;
     [d->wk setNavigationDelegate:d->delegate];
     [d->wk setUIDelegate:d->delegate];
+
+    applyUserAgent();
 }
 
 WKWebViewWidget::~WKWebViewWidget() {
@@ -1001,4 +1007,59 @@ void WKWebViewWidget::renderErrorPage(const QUrl& url,
     // Carica l'HTML direttamente nella webview
     [d->wk loadHTMLString:[NSString stringWithUTF8String:html.toUtf8().constData()]
                   baseURL:[NSURL URLWithString:@"about:blank"]];
+}
+
+// --- NEW: metodo privato
+void WKWebViewWidget::applyUserAgent() {
+    if (!(d && d->wk)) return;
+    @autoreleasepool {
+        // Suffix via configuration.applicationNameForUserAgent
+        if (d->appUA.isEmpty()) {
+            @try { [d->wk.configuration setValue:nil forKey:@"applicationNameForUserAgent"]; } @catch(...) {}
+        } else {
+            NSString* s = [NSString stringWithUTF8String:d->appUA.toUtf8().constData()];
+            @try {
+                if ([d->wk.configuration respondsToSelector:@selector(setApplicationNameForUserAgent:)]) {
+                    d->wk.configuration.applicationNameForUserAgent = s;
+                } else {
+                    [d->wk.configuration setValue:s forKey:@"applicationNameForUserAgent"];
+                }
+            } @catch(...) {}
+        }
+
+        // Override totale via customUserAgent
+        if (d->customUA.isEmpty()) {
+            @try { d->wk.customUserAgent = nil; } @catch(...) {
+                @try { [d->wk setValue:nil forKey:@"customUserAgent"]; } @catch(...) {}
+            }
+        } else {
+            NSString* ua = [NSString stringWithUTF8String:d->customUA.toUtf8().constData()];
+            @try { d->wk.customUserAgent = ua; } @catch(...) {
+                @try { [d->wk setValue:ua forKey:@"customUserAgent"]; } @catch(...) {}
+            }
+        }
+    }
+}
+
+// --- API pubblica UA
+void WKWebViewWidget::setUserAgent(const QString& ua) {
+    if (!d) return;
+    d->customUA = ua.trimmed();
+    applyUserAgent();
+}
+
+QString WKWebViewWidget::userAgent() const {
+    return d ? d->customUA : QString();
+}
+
+void WKWebViewWidget::resetUserAgent() {
+    if (!d) return;
+    d->customUA.clear();
+    applyUserAgent();
+}
+
+void WKWebViewWidget::setApplicationNameForUserAgent(const QString& appName) {
+    if (!d) return;
+    d->appUA = appName.trimmed();
+    applyUserAgent();
 }

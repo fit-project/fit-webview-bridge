@@ -63,6 +63,9 @@ class Main(QMainWindow):
         # segnali base
         self.view.titleChanged.connect(self.setWindowTitle)
         self.view.loadProgress.connect(lambda p: print("progress:", p))
+        self.view.setUserAgent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+        )
 
         # abilita/disabilita i bottoni in base alla navigazione
         self.btnBack.setEnabled(False)
