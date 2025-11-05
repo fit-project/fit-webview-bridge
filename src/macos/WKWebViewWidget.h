@@ -23,6 +23,8 @@ public:
     Q_INVOKABLE void stop();
     Q_INVOKABLE void reload();
     Q_INVOKABLE void evaluateJavaScript(const QString& script);
+    Q_INVOKABLE quint64 evaluateJavaScriptWithResult(const QString& script);
+
 
     Q_INVOKABLE void setDownloadDirectory(const QString& dirPath);
     Q_INVOKABLE QString downloadDirectory() const;
@@ -48,6 +50,9 @@ signals:
     void downloadProgress(qint64 bytesReceived, qint64 totalBytes);
     void downloadFinished(DownloadInfo* info);
     void downloadFailed(const QString& filePath, const QString& error);
+
+    void javaScriptResult(const QVariant& result, quint64 token, const QString& error);
+
 
 protected:
     void showEvent(QShowEvent*) override;

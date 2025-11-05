@@ -5,6 +5,11 @@
 #include "WKWebViewWidget.h"
 #include "DownloadInfo.h"
 
+#include <atomic>
+
+#include <QPointer>
+static std::atomic<quint64> s_jsToken{0};
+
 
 static inline void fit_emit_downloadStarted(WKWebViewWidget* owner,
                                             const QString& name,
@@ -908,6 +913,45 @@ void WKWebViewWidget::evaluateJavaScript(const QString& script) {
     [d->wk evaluateJavaScript:s completionHandler:^(id result, NSError* error){
         Q_UNUSED(result); Q_UNUSED(error);
     }];
+}
+
+quint64 WKWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
+    if (!d || !d->wk) return 0;
+    const quint64 token = ++s_jsToken;
+
+    NSString* s = [NSString stringWithUTF8String:script.toUtf8().constData()];
+
+    // ✅ usa QPointer invece di __weak
+    QPointer<WKWebViewWidget> guard(this);
+
+    [d->wk evaluateJavaScript:s completionHandler:^(id result, NSError* error) {
+        WKWebViewWidget* self = guard.data();
+        if (!self) return;  // l'oggetto Qt è stato distrutto: esci in sicurezza
+
+        QVariant out;
+        if ([result isKindOfClass:NSString.class]) {
+            out = QString::fromUtf8([(NSString*)result UTF8String]);
+        } else if ([result isKindOfClass:NSNumber.class]) {
+            out = QVariant::fromValue([(NSNumber*)result doubleValue]);
+        } else if (!result || result == (id)kCFNull) {
+            out = QVariant();
+        } else {
+            NSData* data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
+            if (data) out = QString::fromUtf8((const char*)data.bytes, (int)data.length);
+        }
+
+        const QString err = error
+            ? QString::fromUtf8(error.localizedDescription.UTF8String)
+            : QString();
+
+        // rimanda sul main loop Qt; se 'self' muore prima della consegna,
+        // Qt scarta la chiamata perché il receiver non esiste più
+        QMetaObject::invokeMethod(self, [self, out, token, err]{
+            emit self->javaScriptResult(out, token, err);
+        }, Qt::QueuedConnection);
+    }];
+
+    return token;
 }
 
 // =======================

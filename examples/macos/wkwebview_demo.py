@@ -67,6 +67,28 @@ class Main(QMainWindow):
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
         )
 
+        def on_load_finished():
+            print("on_load_finished")
+            tok = self.view.evaluateJavaScriptWithResult(
+                "(() => ({ y: window.scrollY,"
+                "         h: Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),"
+                "         vh: window.innerHeight }))()"
+            )
+
+            def on_js(result, token, error):
+                print(f"result: {result}")
+                if token != tok:
+                    return
+                if error:
+                    print("JS error:", error)
+                    return
+                # result è dict serializzato in JSON (se hai scelto la serializzazione)
+                # oppure primitive QVariant: gestiscilo e continua il flow di screenshot
+
+            self.view.javaScriptResult.connect(on_js)
+
+        self.view.loadFinished.connect(on_load_finished)
+
         # abilita/disabilita i bottoni in base alla navigazione
         self.btnBack.setEnabled(False)
         self.btnFwd.setEnabled(False)
