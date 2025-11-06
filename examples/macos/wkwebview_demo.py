@@ -31,6 +31,10 @@ except Exception:
 HOME_URL = "https://github.com/fit-project"
 
 
+from PySide6.QtCore import QStandardPaths
+from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -44,6 +48,7 @@ class Main(QMainWindow):
         self.btnBack = QPushButton("◀︎ Back")
         self.btnFwd = QPushButton("Forward ▶︎")
         self.btnHome = QPushButton("🏠 Home")
+        self.btnShot = QPushButton("📸 Screenshot")
 
         self.address = QLineEdit()  # ← barra indirizzi
         self.address.setPlaceholderText("Digita un URL o una ricerca…")
@@ -54,11 +59,21 @@ class Main(QMainWindow):
         bar.addWidget(self.btnHome)
         bar.addWidget(self.address, 1)  # ← occupa spazio elastico
         bar.addWidget(self.btnGo)
+        bar.addWidget(self.btnShot)
         root.addLayout(bar)
 
         # --- webview ---
         self.view = WKWebViewWidget()
         root.addWidget(self.view)
+
+        # handler screenshot
+        self.btnShot.clicked.connect(self.take_screenshot)
+
+        # collega il segnale di fine cattura (una volta sola è ok: filtriamo con token)
+        self.view.captureFinished.connect(self.on_capture_finished)
+
+        # token dell’ultima richiesta (per distinguere se fai più scatti)
+        self._last_capture_token = None
 
         # segnali base
         self.view.titleChanged.connect(self.setWindowTitle)
@@ -146,6 +161,54 @@ class Main(QMainWindow):
         # carica home e imposta barra
         self.view.setUrl(QUrl(HOME_URL))
         self.address.setText(HOME_URL)
+
+    def take_screenshot(self):
+        # cartella suggerita: Pictures/ o Desktop se non disponibile
+        pics = (
+            QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
+            or QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+            or ""
+        )
+        # suggerisci PNG di default (puoi mettere .jpg per JPEG)
+        suggested = os.path.join(pics, "snapshot.png") if pics else "snapshot.png"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Salva screenshot visibile",
+            suggested,
+            "PNG (*.png);;JPEG (*.jpg *.jpeg)",
+        )
+        if not path:
+            return
+
+        # CHIAMATA CHIAVE: ritorna un token per riconoscere l’operazione
+        self._last_capture_token = self.view.captureVisiblePage(path)
+        print(
+            f"[screenshot] richiesto → token={self._last_capture_token}, path='{path}'"
+        )
+
+    def on_capture_finished(self, token, ok, filePath, error):
+        # ignora screenshot vecchi se ne stai facendo un altro
+        if self._last_capture_token is not None and token != self._last_capture_token:
+            return
+
+        if ok:
+            print(f"[screenshot] OK  → token={token}, file='{filePath}'")
+            QMessageBox.information(
+                self, "Screenshot salvato", f"File salvato:\n{filePath}"
+            )
+        else:
+            print(
+                f"[screenshot] FAIL → token={token}, err='{error}', path='{filePath}'"
+            )
+            QMessageBox.critical(
+                self,
+                "Errore screenshot",
+                error or "Impossibile salvare lo screenshot",
+            )
+
+        # opzionale: azzera il token
+        self._last_capture_token = None
 
 
 if __name__ == "__main__":

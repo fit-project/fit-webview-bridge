@@ -36,6 +36,8 @@ public:
     Q_INVOKABLE void resetUserAgent();                      // rimuove l’override
     Q_INVOKABLE void setApplicationNameForUserAgent(const QString& appName); // opzionale
 
+    Q_INVOKABLE quint64 captureVisiblePage(const QString& filePath);
+
 signals:
     void loadFinished(bool ok);
     void urlChanged(const QUrl& url);
@@ -52,6 +54,7 @@ signals:
     void downloadFailed(const QString& filePath, const QString& error);
 
     void javaScriptResult(const QVariant& result, quint64 token, const QString& error);
+    void captureFinished(quint64 token, bool ok, const QString& filePath, const QString& error);
 
 
 protected:
@@ -63,4 +66,5 @@ private:
 
      // --- NEW: helper che applica UA
     void applyUserAgent();
+     quint64 _captureVisiblePage_onGui(const QString& filePath, quint64 token); // <-- AGGIUNGI
 };

@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <objc/message.h>
+#import <dispatch/dispatch.h>   // <-- AGGIUNGI
 
 #include "WKWebViewWidget.h"
 #include "DownloadInfo.h"
@@ -8,6 +9,15 @@
 #include <atomic>
 
 #include <QPointer>
+
+#include <QtWidgets>
+#include <QString>
+#include <QUrl>
+#include <QDir>
+
+@class WKNavDelegate;
+@class FitUrlMsgHandler;
+
 static std::atomic<quint64> s_jsToken{0};
 
 
@@ -41,13 +51,7 @@ static inline void fit_emit_downloadFinished(WKWebViewWidget* owner,
 }
 
 
-#include <QtWidgets>
-#include <QString>
-#include <QUrl>
-#include <QDir>
 
-@class WKNavDelegate;
-@class FitUrlMsgHandler;
 
 // =======================
 // Impl
@@ -121,6 +125,43 @@ static NSString* FIT_T(NSString* key) {
     NSString *lang = FIT_CurrentLang();
     NSDictionary *tbl = [lang isEqualToString:@"it"] ? it : en;
     return tbl[key] ?: en[key] ?: key;
+}
+
+// --- Helpers di I/O immagine ---
+static inline bool writeNSDataToFile(NSData* data, const QString& qpath, QString& err) {
+    if (!data) { err = QStringLiteral("No data"); return false; }
+    NSString *path = [NSString stringWithUTF8String:qpath.toUtf8().constData()];
+    if (!path.length) { err = QStringLiteral("Empty path"); return false; }
+    NSError *nserr = nil;
+    BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:&nserr];
+    if (!ok) err = nserr ? QString::fromUtf8(nserr.localizedDescription.UTF8String)
+                         : QStringLiteral("Write failed");
+    return ok;
+}
+
+// Fallback: cattura la NSView come PNG se takeSnapshot fallisce
+static NSData* SnapshotViewPNG(NSView *view) {
+    if (!view) return nil;
+    const NSRect r = view.bounds;
+    NSBitmapImageRep *rep = [view bitmapImageRepForCachingDisplayInRect:r];
+    if (!rep) return nil;
+    [view cacheDisplayInRect:r toBitmapImageRep:rep];
+    return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+
+
+
+template <typename F>
+static quint64 ensureOnGuiThread(QObject* obj, F&& fn) {
+    const bool isGui = (QThread::currentThread() == qApp->thread());
+    static std::atomic<quint64> s_tokenGen{0};
+    const quint64 token = ++s_tokenGen;
+    if (isGui) {
+        fn(token);
+    } else {
+        QMetaObject::invokeMethod(obj, [fn, token](){ fn(token); }, Qt::QueuedConnection);
+    }
+    return token;
 }
 
 @implementation FitUrlMsgHandler
@@ -1106,4 +1147,88 @@ void WKWebViewWidget::setApplicationNameForUserAgent(const QString& appName) {
     if (!d) return;
     d->appUA = appName.trimmed();
     applyUserAgent();
+}
+
+quint64 WKWebViewWidget::captureVisiblePage(const QString& filePath) {
+    return ensureOnGuiThread(this, [this, filePath](quint64 token){
+        _captureVisiblePage_onGui(filePath, token);
+    });
+}
+
+quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quint64 token) {
+    if (!(d && d->wk)) {
+        emit captureFinished(token, false, filePath, QStringLiteral("WebView not ready"));
+        return token;
+    }
+    const QString outPath = filePath.trimmed();
+    if (outPath.isEmpty()) {
+        emit captureFinished(token, false, filePath, QStringLiteral("Empty output path"));
+        return token;
+    }
+
+    // Assicura cartella
+    QFileInfo fi(outPath);
+    if (!fi.dir().exists()) QDir().mkpath(fi.dir().path());
+
+    // Guard per vita dell’oggetto
+    QPointer<WKWebViewWidget> guard(this);
+
+    // Micro-delay per stabilizzare layout
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        WKWebViewWidget* self = guard.data();
+        if (!self || !(self->d && self->d->wk)) return;
+
+        WKSnapshotConfiguration *cfg = [WKSnapshotConfiguration new];
+        cfg.afterScreenUpdates = YES;
+        cfg.rect = self->d->wk.bounds; // solo visibile
+
+        [self->d->wk takeSnapshotWithConfiguration:cfg
+                                 completionHandler:^(NSImage *snapshotImage, NSError *error) {
+            WKWebViewWidget* self2 = guard.data();
+            if (!self2 || !(self2->d && self2->d->wk)) return;
+
+            QString err;
+            bool ok = false;
+
+            if (!snapshotImage || error) {
+                // Fallback: cattura la view
+                NSData *fallbackPNG = SnapshotViewPNG(self2->d->wk);
+                if (fallbackPNG) {
+                    ok = writeNSDataToFile(fallbackPNG, outPath, err);
+                } else {
+                    err = error ? QString::fromUtf8(error.localizedDescription.UTF8String)
+                                : QStringLiteral("Snapshot failed");
+                }
+            } else {
+                // NSImage -> PNG/JPEG in base all’estensione
+                NSData *tiff = [snapshotImage TIFFRepresentation];
+                if (!tiff) {
+                    err = QStringLiteral("Empty TIFF data");
+                } else {
+                    NSBitmapImageRep* rep = [NSBitmapImageRep imageRepWithData:tiff];
+                    if (!rep) {
+                        err = QStringLiteral("No bitmap representation");
+                    } else {
+                        const QString ext = QFileInfo(outPath).suffix().toLower();
+                        NSData *data = nil;
+                        if (ext == "jpg" || ext == "jpeg") {
+                            data = [rep representationUsingType:NSBitmapImageFileTypeJPEG
+                                                    properties:@{NSImageCompressionFactor:@0.95}];
+                        } else {
+                            data = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                        }
+                        if (data) ok = writeNSDataToFile(data, outPath, err);
+                        else if (err.isEmpty()) err = QStringLiteral("Image encode failed");
+                    }
+                }
+            }
+
+            QMetaObject::invokeMethod(self2, [self2, token, ok, outPath, err]{
+                emit self2->captureFinished(token, ok, outPath, err);
+            }, Qt::QueuedConnection);
+        }];
+    });
+
+    return token;
 }
