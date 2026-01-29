@@ -826,6 +826,9 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     NSView* nsParent = (__bridge NSView*)reinterpret_cast<void*>(winId());
     WKWebViewConfiguration* cfg = [[WKWebViewConfiguration alloc] init];
+    if ([cfg respondsToSelector:@selector(setWebsiteDataStore:)]) {
+        cfg.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
+    }
     if ([cfg respondsToSelector:@selector(defaultWebpagePreferences)]) {
         cfg.defaultWebpagePreferences.allowsContentJavaScript = YES;
     }
