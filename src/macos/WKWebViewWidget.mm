@@ -62,6 +62,7 @@ struct WKWebViewWidget::Impl {
     WKUserContentController* ucc       = nil;
     FitUrlMsgHandler*        msg       = nil;
     QString                  downloadDir; // es. ~/Downloads
+    id                       eventMonitor = nil;
 
     // --- UA ---
     QString                  customUA;  // override UA (se non vuoto)
@@ -910,11 +911,34 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     [d->wk setNavigationDelegate:d->delegate];
     [d->wk setUIDelegate:d->delegate];
 
+    // Ensure Qt focus follows native clicks inside WKWebView.
+    __unsafe_unretained WKWebView* weakWk = d->wk;
+    d->eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
+                                                            handler:^NSEvent* _Nullable(NSEvent* _Nonnull event) {
+        WKWebView* wk = weakWk;
+        if (!wk || event.window != wk.window) return event;
+        NSView* hit = [wk hitTest:[event locationInWindow]];
+        if (hit && ([hit isDescendantOf:wk] || hit == wk)) {
+            if (auto *w = window()) {
+                if (QWidget *fw = w->focusWidget(); fw && fw != this) {
+                    fw->clearFocus();
+                }
+            }
+            setFocus(Qt::MouseFocusReason);
+        }
+        return event;
+    }];
+
     applyUserAgent();
 }
 
 WKWebViewWidget::~WKWebViewWidget() {
     if (!d) return;
+
+    if (d->eventMonitor) {
+        [NSEvent removeMonitor:d->eventMonitor];
+        d->eventMonitor = nil;
+    }
 
     if (d->ucc && d->msg) {
         @try { [d->ucc removeScriptMessageHandlerForName:@"fitUrlChanged"]; } @catch (...) {}
@@ -944,10 +968,49 @@ void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
 }
 
 void WKWebViewWidget::mousePressEvent(QMouseEvent* e) {
+    // Ensure Qt focus follows native focus, so shortcuts don't stay on other widgets.
+    if (auto *w = window()) {
+        if (QWidget *fw = w->focusWidget(); fw && fw != this) {
+            fw->clearFocus();
+        }
+    }
+    setFocus(Qt::MouseFocusReason);
     if (d && d->wk && d->wk.window) {
         [d->wk.window makeFirstResponder:d->wk];
     }
     QWidget::mousePressEvent(e);
+}
+
+void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
+    if (d && d->wk) {
+        auto sendAction = [&](SEL sel) {
+            if (d->wk.window) {
+                [d->wk.window makeFirstResponder:d->wk];
+            }
+            [NSApp sendAction:sel to:nil from:d->wk];
+        };
+        if (e->matches(QKeySequence::Copy)) {
+            sendAction(@selector(copy:));
+            e->accept();
+            return;
+        }
+        if (e->matches(QKeySequence::Paste)) {
+            sendAction(@selector(paste:));
+            e->accept();
+            return;
+        }
+        if (e->matches(QKeySequence::Cut)) {
+            sendAction(@selector(cut:));
+            e->accept();
+            return;
+        }
+        if (e->matches(QKeySequence::SelectAll)) {
+            sendAction(@selector(selectAll:));
+            e->accept();
+            return;
+        }
+    }
+    QWidget::keyPressEvent(e);
 }
 
 QUrl WKWebViewWidget::url() const {
