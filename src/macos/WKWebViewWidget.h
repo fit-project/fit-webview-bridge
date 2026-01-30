@@ -5,7 +5,7 @@
 
 #include "DownloadInfo.h"
 
-class QString; class QShowEvent; class QResizeEvent;
+class QString; class QShowEvent; class QResizeEvent; class QFocusEvent; class QMouseEvent;
 
 class WKWebViewWidget : public QWidget {
     Q_OBJECT
@@ -60,6 +60,8 @@ signals:
 protected:
     void showEvent(QShowEvent*) override;
     void resizeEvent(QResizeEvent*) override;
+    void focusInEvent(QFocusEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
 
 private:
     struct Impl; Impl* d = nullptr;

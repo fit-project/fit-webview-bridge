@@ -822,6 +822,8 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     setAttribute(Qt::WA_NativeWindow, true);
     (void)winId();
 
+    setFocusPolicy(Qt::StrongFocus);
+
     d->downloadDir = QDir::homePath() + "/Downloads";
 
     NSView* nsParent = (__bridge NSView*)reinterpret_cast<void*>(winId());
@@ -929,6 +931,24 @@ WKWebViewWidget::~WKWebViewWidget() {
 
 void WKWebViewWidget::showEvent(QShowEvent* e) { QWidget::showEvent(e); }
 void WKWebViewWidget::resizeEvent(QResizeEvent* e) { QWidget::resizeEvent(e); }
+
+void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
+    QWidget::focusInEvent(e);
+    if (d && d->wk) {
+        if (d->wk.window) {
+            [d->wk.window makeFirstResponder:d->wk];
+        } else {
+            [d->wk becomeFirstResponder];
+        }
+    }
+}
+
+void WKWebViewWidget::mousePressEvent(QMouseEvent* e) {
+    if (d && d->wk && d->wk.window) {
+        [d->wk.window makeFirstResponder:d->wk];
+    }
+    QWidget::mousePressEvent(e);
+}
 
 QUrl WKWebViewWidget::url() const {
     if (!(d && d->wk)) return QUrl();
