@@ -1026,13 +1026,41 @@ void WKWebViewWidget::setUrl(const QUrl& u) {
     if (!(d && d->wk)) return;
     NSURL* nsurl = toNSURL(u);
     if (!nsurl) return;
-    [d->wk loadRequest:[NSURLRequest requestWithURL:nsurl]];
+
+    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
+    req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    req.timeoutInterval = 60.0;
+    [d->wk loadRequest:req];
 }
 
 void WKWebViewWidget::back()    { if (d && d->wk && d->wk.canGoBack)    [d->wk goBack]; }
 void WKWebViewWidget::forward() { if (d && d->wk && d->wk.canGoForward) [d->wk goForward]; }
 void WKWebViewWidget::stop()    { if (d && d->wk) [d->wk stopLoading:nil]; }
-void WKWebViewWidget::reload()  { if (d && d->wk) [d->wk reload]; }
+void WKWebViewWidget::reload()  {
+    if (!(d && d->wk)) return;
+    if ([d->wk respondsToSelector:@selector(reloadFromOrigin)]) {
+        [d->wk reloadFromOrigin];
+    } else {
+        [d->wk reload];
+    }
+}
+
+void WKWebViewWidget::clearWebsiteData() {
+    if (!(d && d->wk)) return;
+
+    WKWebsiteDataStore* store = nil;
+    if ([d->wk.configuration respondsToSelector:@selector(websiteDataStore)]) {
+        store = d->wk.configuration.websiteDataStore;
+    }
+    if (!store) return;
+
+    NSSet<NSString*>* dataTypes = [WKWebsiteDataStore allWebsiteDataTypes];
+    NSDate* since = [NSDate dateWithTimeIntervalSince1970:0];
+
+    [store removeDataOfTypes:dataTypes modifiedSince:since completionHandler:^{}];
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    [[NSHTTPCookieStorage sharedHTTPCookieStorage] removeCookiesSinceDate:since];
+}
 
 void WKWebViewWidget::evaluateJavaScript(const QString& script) {
     if (!d || !d->wk) return;
