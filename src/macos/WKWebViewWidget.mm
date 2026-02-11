@@ -956,7 +956,10 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     // Ensure Qt focus follows native clicks inside WKWebView.
     __unsafe_unretained WKWebView* weakWk = d->wk;
-    d->eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown
+    d->eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown |
+                                                                     NSEventMaskRightMouseDown |
+                                                                     NSEventMaskOtherMouseDown |
+                                                                     NSEventMaskScrollWheel)
                                                             handler:^NSEvent* _Nullable(NSEvent* _Nonnull event) {
         WKWebView* wk = weakWk;
         if (!wk || event.window != wk.window) return event;
@@ -968,6 +971,9 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
                 }
             }
             setFocus(Qt::MouseFocusReason);
+            if (wk.window) {
+                [wk.window makeFirstResponder:wk];
+            }
         }
         return event;
     }];
@@ -1032,6 +1038,26 @@ void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
             }
             [NSApp sendAction:sel to:nil from:d->wk];
         };
+        if (e->matches(QKeySequence::Find)) {
+            bool ok = false;
+            const QString term = QInputDialog::getText(this,
+                                                       tr("Find"),
+                                                       tr("Text:"),
+                                                       QLineEdit::Normal,
+                                                       QString(),
+                                                       &ok);
+            if (ok && !term.isEmpty()) {
+                QString esc = term;
+                esc.replace("\\", "\\\\");
+                esc.replace("'", "\\'");
+                esc.replace("\n", "\\n");
+                evaluateJavaScript(QStringLiteral(
+                    "window.find('%1', false, false, true, false, false, false);")
+                    .arg(esc));
+            }
+            e->accept();
+            return;
+        }
         if (e->matches(QKeySequence::Copy)) {
             sendAction(@selector(copy:));
             e->accept();
