@@ -89,6 +89,14 @@ static NSURL* toNSURL(QUrl u);
 
 static inline NSString* FITURLStr(NSURL *u) { return u ? u.absoluteString : @"(nil)"; }
 
+static inline bool fit_should_ignore_navigation_error(NSError *error) {
+    if (!error) return false;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return true;
+    // Emitted when navigation is intentionally interrupted by download policy.
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return true;
+    return false;
+}
+
 static NSString* FIT_CurrentLang(void) {
     NSString *lang = NSLocale.preferredLanguages.firstObject ?: @"en";
     // normalizza es. "it-IT" -> "it"
@@ -417,6 +425,7 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
        withError:(NSError *)error
 {
     if (!self.owner) return;
+    if (fit_should_ignore_navigation_error(error)) return;
     emit self.owner->loadFinished(false);
     emit self.owner->loadProgress(0);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -470,6 +479,7 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     if (!self.owner) return;
+    if (fit_should_ignore_navigation_error(error)) return;
     emit self.owner->loadFinished(false);
     emit self.owner->loadProgress(0);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -535,8 +545,6 @@ didBecomeDownload:(WKDownload *)download
         [self.sourceURLs setObject:navigationAction.request.URL forKey:download];
     }
 
-    if (self.owner) emit self.owner->downloadStarted(QString(), QString());
-
     // KVO su NSProgress (3 keyPath, con INITIAL)
     [download.progress addObserver:self forKeyPath:@"fractionCompleted"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
@@ -559,13 +567,6 @@ didBecomeDownload:(WKDownload *)download
 
     if (navigationResponse.response.URL) {
         [self.sourceURLs setObject:navigationResponse.response.URL forKey:download];
-    }
-
-    NSString* suggested = navigationResponse.response.suggestedFilename ?: @"download";
-    if (self.owner) {
-        QString dir = self.owner->downloadDirectory();
-        QString path = dir + "/" + QString::fromUtf8(suggested.UTF8String);
-        emit self.owner->downloadStarted(QString::fromUtf8(suggested.UTF8String), path);
     }
 
     [download.progress addObserver:self forKeyPath:@"fractionCompleted"
