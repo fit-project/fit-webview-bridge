@@ -190,6 +190,20 @@ static inline NSNumber* FITNumberOrNil(id obj) {
 
     if ([message.name isEqualToString:@"fitUrlChanged"]) {
         if (![message.body isKindOfClass:[NSString class]]) return;
+
+        // Suppress SPA-driven urlChanged while an actual file download is active.
+        id navDelegate = self.webView ? self.webView.navigationDelegate : nil;
+        if (navDelegate) {
+            @try {
+                id active = [navDelegate valueForKey:@"activeDownloads"];
+                if ([active isKindOfClass:NSHashTable.class] && [(NSHashTable*)active count] > 0) {
+                    return;
+                }
+            } @catch (...) {
+                // Best effort: if delegate doesn't expose activeDownloads, keep default behavior.
+            }
+        }
+
         QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
         emit self.owner->urlChanged(QUrl::fromEncoded(s.toUtf8()));
         return;
