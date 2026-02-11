@@ -1038,26 +1038,6 @@ void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
             }
             [NSApp sendAction:sel to:nil from:d->wk];
         };
-        if (e->matches(QKeySequence::Find)) {
-            bool ok = false;
-            const QString term = QInputDialog::getText(this,
-                                                       tr("Find"),
-                                                       tr("Text:"),
-                                                       QLineEdit::Normal,
-                                                       QString(),
-                                                       &ok);
-            if (ok && !term.isEmpty()) {
-                QString esc = term;
-                esc.replace("\\", "\\\\");
-                esc.replace("'", "\\'");
-                esc.replace("\n", "\\n");
-                evaluateJavaScript(QStringLiteral(
-                    "window.find('%1', false, false, true, false, false, false);")
-                    .arg(esc));
-            }
-            e->accept();
-            return;
-        }
         if (e->matches(QKeySequence::Copy)) {
             sendAction(@selector(copy:));
             e->accept();
