@@ -42,6 +42,7 @@ public:
 signals:
     void loadFinished(bool ok);
     void urlChanged(const QUrl& url);
+    void navigationDisplayUrlChanged(const QUrl& url);
     void titleChanged(const QString& title);
     void loadProgress(int percent);
     void canGoBackChanged(bool);

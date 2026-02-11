@@ -191,21 +191,25 @@ static inline NSNumber* FITNumberOrNil(id obj) {
     if ([message.name isEqualToString:@"fitUrlChanged"]) {
         if (![message.body isKindOfClass:[NSString class]]) return;
 
-        // Suppress SPA-driven urlChanged while an actual file download is active.
+        QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
+        QUrl qurl = QUrl::fromEncoded(s.toUtf8());
+        emit self.owner->urlChanged(qurl);
+
         id navDelegate = self.webView ? self.webView.navigationDelegate : nil;
+        BOOL canDisplay = YES;
         if (navDelegate) {
             @try {
                 id active = [navDelegate valueForKey:@"activeDownloads"];
                 if ([active isKindOfClass:NSHashTable.class] && [(NSHashTable*)active count] > 0) {
-                    return;
+                    canDisplay = NO;
                 }
             } @catch (...) {
-                // Best effort: if delegate doesn't expose activeDownloads, keep default behavior.
+                // Best effort.
             }
         }
-
-        QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
-        emit self.owner->urlChanged(QUrl::fromEncoded(s.toUtf8()));
+        if (canDisplay) {
+            emit self.owner->navigationDisplayUrlChanged(qurl);
+        }
         return;
     }
 
@@ -459,8 +463,12 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL && self.activeDownloads.count == 0)
-        emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
+    if (webView.URL) {
+        QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
+        emit self.owner->urlChanged(qurl);
+        if (self.activeDownloads.count == 0)
+            emit self.owner->navigationDisplayUrlChanged(qurl);
+    }
     emit self.owner->loadProgress(5);
     emit self.owner->canGoBackChanged(webView.canGoBack);
     emit self.owner->canGoForwardChanged(webView.canGoForward);
@@ -468,8 +476,12 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL && self.activeDownloads.count == 0)
-        emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
+    if (webView.URL) {
+        QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
+        emit self.owner->urlChanged(qurl);
+        if (self.activeDownloads.count == 0)
+            emit self.owner->navigationDisplayUrlChanged(qurl);
+    }
     emit self.owner->loadProgress(50);
     emit self.owner->canGoBackChanged(webView.canGoBack);
     emit self.owner->canGoForwardChanged(webView.canGoForward);
@@ -477,15 +489,23 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL && self.activeDownloads.count == 0)
-        emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
+    if (webView.URL) {
+        QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
+        emit self.owner->urlChanged(qurl);
+        if (self.activeDownloads.count == 0)
+            emit self.owner->navigationDisplayUrlChanged(qurl);
+    }
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
     emit self.owner->loadFinished(true);
-    if (webView.URL && self.activeDownloads.count == 0)
-        emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
+    if (webView.URL) {
+        QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
+        emit self.owner->urlChanged(qurl);
+        if (self.activeDownloads.count == 0)
+            emit self.owner->navigationDisplayUrlChanged(qurl);
+    }
     if (webView.title)
         emit self.owner->titleChanged(QString::fromUtf8(webView.title.UTF8String));
     emit self.owner->loadProgress(100);
