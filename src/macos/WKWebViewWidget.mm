@@ -466,8 +466,6 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
-        if (self.activeDownloads.count == 0)
-            emit self.owner->navigationDisplayUrlChanged(qurl);
     }
     emit self.owner->loadProgress(5);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -479,8 +477,6 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
-        if (self.activeDownloads.count == 0)
-            emit self.owner->navigationDisplayUrlChanged(qurl);
     }
     emit self.owner->loadProgress(50);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -492,8 +488,6 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
-        if (self.activeDownloads.count == 0)
-            emit self.owner->navigationDisplayUrlChanged(qurl);
     }
 }
 
