@@ -363,6 +363,7 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 @property(nonatomic, assign) WKWebViewWidget* owner;
 // mappe per download
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;   // weak key -> strong value
+@property(nonatomic, strong) NSHashTable<WKDownload*>* activeDownloads;         // weak set
 @property(nonatomic, strong) NSMapTable<NSProgress*, WKDownload*>* progressToDownload; // weak->weak
 @property(nonatomic, strong) NSHashTable<NSProgress*>* completedProgresses;      // weak set
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals; // weak->strong
@@ -378,6 +379,7 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 - (instancetype)init {
     if ((self = [super init])) {
         _downloadPaths = [NSMapTable weakToStrongObjectsMapTable];
+        _activeDownloads = [NSHashTable weakObjectsHashTable];
         _progressToDownload = [NSMapTable weakToWeakObjectsMapTable];
         _completedProgresses = [NSHashTable weakObjectsHashTable];
         _expectedTotals = [NSMapTable weakToStrongObjectsMapTable];
@@ -443,7 +445,7 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL)
+    if (webView.URL && self.activeDownloads.count == 0)
         emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
     emit self.owner->loadProgress(5);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -452,7 +454,7 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL)
+    if (webView.URL && self.activeDownloads.count == 0)
         emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
     emit self.owner->loadProgress(50);
     emit self.owner->canGoBackChanged(webView.canGoBack);
@@ -461,14 +463,14 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
 
 - (void)webView:(WKWebView *)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
-    if (webView.URL)
+    if (webView.URL && self.activeDownloads.count == 0)
         emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     if (!self.owner) return;
     emit self.owner->loadFinished(true);
-    if (webView.URL)
+    if (webView.URL && self.activeDownloads.count == 0)
         emit self.owner->urlChanged(QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)));
     if (webView.title)
         emit self.owner->titleChanged(QString::fromUtf8(webView.title.UTF8String));
@@ -540,6 +542,10 @@ didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
 
+    if (![self.activeDownloads containsObject:download]) {
+        [self.activeDownloads addObject:download];
+    }
+
     // URL sorgente (request dell’azione)
     if (navigationAction.request.URL) {
         [self.sourceURLs setObject:navigationAction.request.URL forKey:download];
@@ -564,6 +570,10 @@ navigationResponse:(WKNavigationResponse *)navigationResponse
 didBecomeDownload:(WKDownload *)download
 {
     download.delegate = self;
+
+    if (![self.activeDownloads containsObject:download]) {
+        [self.activeDownloads addObject:download];
+    }
 
     if (navigationResponse.response.URL) {
         [self.sourceURLs setObject:navigationResponse.response.URL forKey:download];
@@ -682,6 +692,8 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 - (void)downloadDidFinish:(WKDownload *)download {
     if (!self.owner) return;
 
+    [self.activeDownloads removeObject:download];
+
     // 1) stop KVO
     @try {
         [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
@@ -755,6 +767,8 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 
 - (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
     if (!self.owner) return;
+
+    [self.activeDownloads removeObject:download];
 
     // stop KVO
     @try {
