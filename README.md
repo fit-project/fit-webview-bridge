@@ -113,6 +113,13 @@ This compiles the module for each configured Python version and validates import
 ./scripts/macos/build_smoke_macos.sh
 ```
 
+By default, the script performs a clean build per Python version (`CLEAN_BUILD=1`) to avoid stale CMake cache/toolchain mismatches.
+To reuse existing build directories:
+
+```bash
+CLEAN_BUILD=0 ./scripts/macos/build_smoke_macos.sh
+```
+
 Single entrypoint (bootstrap + build/smoke):
 
 ```bash
@@ -193,6 +200,15 @@ If `clang-tidy` cannot find macOS framework headers (for example `Cocoa/Cocoa.h`
 
 ```bash
 MACOS_SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/macos/check_quality.sh
+```
+
+If `build_smoke_macos.sh` fails during Shiboken generation with errors like
+`Libc++ only supports Clang 19 and later` or missing `__builtin_ctzg/__builtin_clzg`,
+you are hitting a mixed toolchain environment (typically Homebrew LLVM headers with AppleClang).
+Use the default clean run and venv toolchain selection:
+
+```bash
+CLEAN_BUILD=1 ./scripts/macos/build_smoke_macos.sh
 ```
 
 Enable local CodeQL scan (optional):

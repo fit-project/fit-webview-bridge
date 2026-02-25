@@ -25,6 +25,7 @@ fi
 CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 CMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES:-arm64}"
 FITWVB_VENDORIZE="${FITWVB_VENDORIZE:-OFF}"
+CLEAN_BUILD="${CLEAN_BUILD:-1}"
 if command -v xcrun >/dev/null 2>&1; then
   MACOS_SDKROOT="${MACOS_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)}"
 else
@@ -52,6 +53,9 @@ for pyv in $PY_VERSIONS; do
 
   build_dir="build-py${pyv/./}"
   echo "--> Python ${pyv} (${venv_dir}), build dir: ${build_dir}"
+  if [[ "${CLEAN_BUILD}" == "1" ]]; then
+    rm -rf "${build_dir}"
+  fi
   source "${venv_dir}/bin/activate"
 
   python_exe="$(python -c 'import sys; print(sys.executable)')"
@@ -63,6 +67,7 @@ for pyv in $PY_VERSIONS; do
     echo "shiboken6 executable not found in ${venv_dir}. Install/repair PySide6 in this venv." >&2
     exit 1
   fi
+  echo "Using shiboken: ${shiboken_exe}"
 
   cmake_cmd=(
     cmake -S . \
