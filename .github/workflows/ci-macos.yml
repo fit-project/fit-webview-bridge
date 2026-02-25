@@ -1,0 +1,79 @@
+name: CI macOS
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "bindings/**"
+      - "examples/**"
+      - "scripts/macos/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - ".clang-format"
+      - ".github/workflows/ci-macos.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "bindings/**"
+      - "examples/**"
+      - "scripts/macos/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - ".clang-format"
+      - ".github/workflows/ci-macos.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    env:
+      PY_VERSIONS: "3.11"
+      PYSIDE_VERSION: "6.9.0"
+      QT_VERSION: "6.9.0"
+      CLEAN_BUILD: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install native tooling
+        run: |
+          brew install llvm
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap macOS environment
+        run: |
+          ./scripts/macos/bootstrap_macos.sh
+
+      - name: Build and smoke import
+        run: |
+          ./scripts/macos/build_smoke_macos.sh
+
+      - name: Run unit and contract tests
+        run: |
+          source .venv311/bin/activate
+          python -m pip install -U pip
+          python -m pip install pytest
+          pytest -m "unit or contract" -q tests/macos
+
+      - name: Run native quality checks
+        run: |
+          source .venv311/bin/activate
+          Python3_EXECUTABLE="$PWD/.venv311/bin/python3" ./scripts/macos/check_quality.sh
