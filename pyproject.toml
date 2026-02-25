@@ -31,3 +31,12 @@ build = ["cp311-*", "cp312-*", "cp313-*"]
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
 repair-wheel-command = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "unit: fast unit tests",
+  "contract: contract tests",
+  "integration: integration tests",
+  "e2e: end-to-end tests",
+]

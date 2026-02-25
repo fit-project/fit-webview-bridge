@@ -1,93 +1,160 @@
 # FIT WebView Bridge
 
-### Description
+## Description
 
-**FIT WebView Bridge** is a cross‑platform Qt widget (C++/Objective‑C++) with **PySide6** bindings that wraps the OS‑native web engines:
-- **Windows →** Edge WebView2
-- **macOS →** WKWebView
-- **Linux →** WebKitGTK (with **GStreamer** for codecs)
+**FIT WebView Bridge** currently provides a native **macOS** Qt widget (`WKWebView`) with **PySide6** bindings.
 
-It exposes a **unified Python API** for browser control and enables **forensic viewing/capture** of content, including media requiring proprietary codecs (e.g., **H.264/AAC**), **without** custom QtWebEngine builds or codec redistribution burdens (system codecs are used). All **controls** (UI and app logic) are **delegated to the PySide window**.
+Goal:
+- use the OS-native web engine and system codecs (no custom QtWebEngine codec builds)
+- expose a Python-usable widget API for navigation, downloads, JS evaluation, and capture
 
+Current implementation scope:
+- macOS backend only (`src/macos`, `bindings/pyside6/macos`)
 
-### Why this project
-QtWebEngine (Chromium) **does not enable proprietary codecs** by default, and redistributing them requires **licensing**. Alternatives (building QtWebEngine with codecs or using QtWebView/QML) have portability/control limitations. The chosen path is to **leverage native engines**, achieving codec compatibility and **full control** via a Python API.
+Roadmap:
+- planned backend expansion to Windows (WebView2) and Linux (WebKitGTK)
 
-### Repository layout
+## Why this project
+QtWebEngine (Chromium) does not enable proprietary codecs by default. This module uses native web engines to keep codec compatibility and retain application control through a Qt/PySide API.
+
+## Repository layout (current)
 ```
 fit-webview-bridge/
 ├─ CMakeLists.txt
-├─ cmake/                   # Find*.cmake, toolchains, helpers
-├─ include/fitwvb/          # Public headers (API)
 ├─ src/
-│  ├─ core/                 # Facade / common interfaces
-│  ├─ win/                  # Edge WebView2 backend (C++)
-│  ├─ macos/                # WKWebView backend (Obj-C++)
-│  └─ linux/                # WebKitGTK backend (C++)
-├─ bindings/pyside6/        # Shiboken6: typesystem & config
-├─ tests/                   # Unit / integration
-└─ examples/                # Minimal PySide6 demo app
+│  └─ macos/                # WKWebView backend (Objective-C++)
+├─ bindings/pyside6/
+│  └─ macos/                # Shiboken typesystem and binding build
+├─ fit_webview_bridge/      # Python package entrypoint
+├─ examples/macos/          # Demo app
+├─ scripts/macos/           # Local bootstrap/build scripts
+└─ tests/                   # Pytest suites
 ```
 
-### Interface (methods/slots + signals)
-**Methods / slots**
-- `load(url)`
+## API (WKWebViewWidget)
+**Methods / invokables**
+- `url()`
+- `setUrl(QUrl)`
 - `back()`
 - `forward()`
-- `reload()`
 - `stop()`
-- `setHtml(html, baseUrl)`
-- `evalJs(script, callback)`
+- `reload()`
+- `clearWebsiteData()`
+- `evaluateJavaScript(QString)`
+- `evaluateJavaScriptWithResult(QString) -> token`
+- `setDownloadDirectory(QString)`
+- `downloadDirectory()`
+- `setUserAgent(QString)`
+- `userAgent()`
+- `resetUserAgent()`
+- `setApplicationNameForUserAgent(QString)`
+- `captureVisiblePage(QString) -> token`
 
 **Signals**
 - `urlChanged(QUrl)`
+- `navigationDisplayUrlChanged(QUrl)`
 - `titleChanged(QString)`
 - `loadProgress(int)`
 - `loadFinished(bool)`
-- `consoleMessage(QString)`
+- `canGoBackChanged(bool)`
+- `canGoForwardChanged(bool)`
+- `downloadStarted(QString, QString)`
+- `downloadProgress(qint64, qint64)`
+- `downloadFinished(DownloadInfo*)`
+- `downloadFailed(QString, QString)`
+- `javaScriptResult(QVariant, quint64, QString)`
+- `captureFinished(quint64, bool, QString, QString)`
 
-> Note: the API is **uniform** across OSes; implementations delegate to the native engine.
-
-### Prerequisites
-**Common**
-- **CMake** (>= 3.24 recommended)
+## Prerequisites (macOS)
+- **CMake** >= 3.24
 - **Ninja** (generator)
-- **Python** 3.9+
-- **PySide6** and **Shiboken6** (for Python bindings)
-- Platform build toolchain
-
-**Windows**
-- **MSVC** (Visual Studio 2022 or Build Tools) and Windows SDK
-- **Microsoft Edge WebView2 Runtime**
-- **WebView2 SDK** (NuGet/vcpkg)
-
-**macOS**
+- **Python** >= 3.11,<3.14
 - **Xcode** + Command Line Tools
-- **Objective‑C++** enabled (.mm)
-- Frameworks: `WebKit`, `Cocoa`
+- **PySide6 / Shiboken6** compatible with your target Python
+- Qt 6.9.x SDK (installed locally, e.g. via `aqtinstall`)
 
-**Linux**
-- **GCC/Clang**, `pkg-config`
-- **WebKitGTK** dev packages (e.g., `webkit2gtk-4.1` or distro equivalent)
-- **GStreamer** (base + required plugins for codecs)
-
-### Build (indicative)
+## Build (macOS)
 ```bash
 git clone https://github.com/fit-project/fit-webview-bridge.git
 cd fit-webview-bridge
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_PYSIDE6_BINDINGS=ON
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_BINDINGS=ON \
+  -DQt6_DIR="$PWD/Qt/6.9.0/macos/lib/cmake/Qt6" \
+  -DPython3_EXECUTABLE="$(python3 -c 'import sys; print(sys.executable)')"
 cmake --build build
-# (optional) ctest --test-dir build
+
+# smoke import
+PYTHONPATH="$PWD/build:$PYTHONPATH" python3 -c "import wkwebview; print('wkwebview import OK')"
 ```
 
-### Examples
+## Local checks (same as CI)
+
+Run these commands before opening a PR, so failures are caught locally first.
+
+### What each tool does
+- `cmake` + `ninja`: configures and builds the native module and PySide6 binding.
+- `pytest`: runs automated tests (`unit`, `contract`, `integration` and `e2e` suites).
+
+### 1) Bootstrap local toolchain (macOS)
+This prepares Python virtualenvs (`3.11`, `3.12`, `3.13`) and installs Qt via `aqtinstall`.
+
+```bash
+./scripts/macos/bootstrap_macos.sh
+```
+
+You can override versions if needed:
+
+```bash
+PYSIDE_VERSION=6.9.3 QT_VERSION=6.9.0 ./scripts/macos/bootstrap_macos.sh
+```
+
+### 2) Build + smoke import (all supported Python versions)
+This compiles the module for each configured Python version and validates import of `wkwebview`.
+
+```bash
+./scripts/macos/build_smoke_macos.sh
+```
+
+Single entrypoint (bootstrap + build/smoke):
+
+```bash
+./scripts/macos/ci_local_macos.sh
+```
+
+### 3) Test suite
+After a successful build, run:
+
+```bash
+
+#Base setup
+source .venv311/bin/activate
+python -m pip install -U pip
+pip install pytest
+
+# unit tests
+pytest -m unit -q tests
+
+# contract tests
+pytest -m contract -q tests
+
+# integration tests
+pytest -m integration -q tests
+
+# end-to-end smoke tests
+pytest -m e2e -q tests
+```
+
+Note: today the repository already contains `unit` tests and pytest markers for `contract`, `integration`, `e2e`. The latter suites can be expanded as the native test matrix grows.
+
+## Examples
 PySide6 samples in `examples/` demonstrate URL loading, JS injection, and signal handling.
 
-### Codec & licensing notes
+## Codec & licensing notes
 The project **does not** redistribute proprietary codecs: it leverages codecs **already provided by the OS**. End‑user usage must comply with the relevant licenses/formats.
 
-### Project status
-Initial/alpha (API subject to change).
+## Project status
+Active development. Current public scope in this repository is macOS.
 
 # Fit Web — Project rationale and options for proprietary codecs
 
