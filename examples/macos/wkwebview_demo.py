@@ -1,11 +1,21 @@
 import os
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path[:0] = [
-    os.path.join(ROOT, "build"),
-    os.path.join(ROOT, "build", "bindings", "shiboken_out"),
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+py_tag = f"{sys.version_info.major}{sys.version_info.minor}"
+candidate_build_dirs = [
+    os.path.join(REPO_ROOT, f"build-py{py_tag}"),
+    os.path.join(REPO_ROOT, "build"),
 ]
+
+for build_dir in candidate_build_dirs:
+    if os.path.exists(build_dir):
+        sys.path.insert(0, build_dir)
+        # legacy/generated wrappers path (if present)
+        shiboken_out = os.path.join(build_dir, "bindings", "shiboken_out")
+        if os.path.exists(shiboken_out):
+            sys.path.insert(0, shiboken_out)
+        break
 
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (

@@ -106,12 +106,6 @@ This prepares Python virtualenvs (`3.11`, `3.12`, `3.13`) and installs Qt via `a
 ./scripts/macos/bootstrap_macos.sh
 ```
 
-You can override versions if needed:
-
-```bash
-PYSIDE_VERSION=6.9.3 QT_VERSION=6.9.0 ./scripts/macos/bootstrap_macos.sh
-```
-
 ### 2) Build + smoke import (all supported Python versions)
 This compiles the module for each configured Python version and validates import of `wkwebview`.
 

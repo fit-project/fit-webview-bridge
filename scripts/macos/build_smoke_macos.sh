@@ -25,6 +25,11 @@ fi
 CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
 CMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES:-arm64}"
 FITWVB_VENDORIZE="${FITWVB_VENDORIZE:-OFF}"
+if command -v xcrun >/dev/null 2>&1; then
+  MACOS_SDKROOT="${MACOS_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)}"
+else
+  MACOS_SDKROOT="${MACOS_SDKROOT:-}"
+fi
 
 if [[ ! -d "$QT6_DIR" ]]; then
   echo "Qt6_DIR not found: $QT6_DIR" >&2
@@ -50,16 +55,47 @@ for pyv in $PY_VERSIONS; do
   source "${venv_dir}/bin/activate"
 
   python_exe="$(python -c 'import sys; print(sys.executable)')"
-  cmake -S . \
-    -B "${build_dir}" \
-    -G Ninja \
-    -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
-    -DCMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES}" \
-    -DFITWVB_VENDORIZE="${FITWVB_VENDORIZE}" \
-    -DQt6_DIR="${QT6_DIR}" \
-    -DPython3_EXECUTABLE="${python_exe}"
+  shiboken_exe="${ROOT_DIR}/${venv_dir}/bin/shiboken6"
+  if [[ ! -x "${shiboken_exe}" ]]; then
+    shiboken_exe="$(python -c 'import shutil; print(shutil.which("shiboken6") or "")')"
+  fi
+  if [[ -z "${shiboken_exe}" || ! -x "${shiboken_exe}" ]]; then
+    echo "shiboken6 executable not found in ${venv_dir}. Install/repair PySide6 in this venv." >&2
+    exit 1
+  fi
 
-  cmake --build "${build_dir}" --parallel
+  cmake_cmd=(
+    cmake -S . \
+      -B "${build_dir}" \
+      -G Ninja \
+      -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+      -DCMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES}" \
+      -DFITWVB_VENDORIZE="${FITWVB_VENDORIZE}" \
+      -DQt6_DIR="${QT6_DIR}" \
+      -DPython3_EXECUTABLE="${python_exe}" \
+      -DSHIBOKEN6_GEN="${shiboken_exe}"
+  )
+  if [[ -n "${MACOS_SDKROOT}" ]]; then
+    cmake_cmd+=("-DCMAKE_OSX_SYSROOT=${MACOS_SDKROOT}")
+  fi
+  env \
+    -u CPATH \
+    -u CPLUS_INCLUDE_PATH \
+    -u C_INCLUDE_PATH \
+    -u OBJC_INCLUDE_PATH \
+    PATH="${ROOT_DIR}/${venv_dir}/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin" \
+    CC=/usr/bin/clang \
+    CXX=/usr/bin/clang++ \
+    "${cmake_cmd[@]}"
+
+  env \
+    -u CPATH \
+    -u CPLUS_INCLUDE_PATH \
+    -u C_INCLUDE_PATH \
+    -u OBJC_INCLUDE_PATH \
+    CC=/usr/bin/clang \
+    CXX=/usr/bin/clang++ \
+    cmake --build "${build_dir}" --parallel
 
   PYTHONPATH="${ROOT_DIR}/${build_dir}:${PYTHONPATH:-}" \
     python -c "import wkwebview; print('wkwebview import OK (py${pyv})')"
