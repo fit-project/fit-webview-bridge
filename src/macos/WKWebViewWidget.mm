@@ -1,7 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <objc/message.h>
-#import <dispatch/dispatch.h>   // <-- AGGIUNGI
+#import <dispatch/dispatch.h> // <-- AGGIUNGI
 
 #include "WKWebViewWidget.h"
 #include "DownloadInfo.h"
@@ -20,53 +20,53 @@
 
 static std::atomic<quint64> s_jsToken{0};
 
-
-static inline void fit_emit_downloadStarted(WKWebViewWidget* owner,
-                                            const QString& name,
-                                            const QString& path) {
-    if (!owner) return;
-    QMetaObject::invokeMethod(owner, [owner, name, path]{
-        emit owner->downloadStarted(name, path);
-    }, Qt::QueuedConnection);
+static NSString* fit_nsStringFromUtf8(const QByteArray& bytes) {
+    if (bytes.isEmpty())
+        return nil;
+    return [NSString stringWithUTF8String:bytes.constData()];
 }
 
-static inline void fit_emit_downloadFailed(WKWebViewWidget* owner,
-                                           const QString& path,
-                                           const QString& err) {
-    if (!owner) return;
-    QMetaObject::invokeMethod(owner, [owner, path, err]{
-        emit owner->downloadFailed(path, err);
-    }, Qt::QueuedConnection);
+static inline void fit_emit_downloadStarted(WKWebViewWidget* owner, const QString& name, const QString& path) {
+    if (!owner)
+        return;
+    QMetaObject::invokeMethod(
+        owner, [owner, name, path] { emit owner->downloadStarted(name, path); }, Qt::QueuedConnection);
 }
 
-static inline void fit_emit_downloadFinished(WKWebViewWidget* owner,
-                                             const QString& fileName,
-                                             const QString& dir,
+static inline void fit_emit_downloadFailed(WKWebViewWidget* owner, const QString& path, const QString& err) {
+    if (!owner)
+        return;
+    QMetaObject::invokeMethod(
+        owner, [owner, path, err] { emit owner->downloadFailed(path, err); }, Qt::QueuedConnection);
+}
+
+static inline void fit_emit_downloadFinished(WKWebViewWidget* owner, const QString& fileName, const QString& dir,
                                              const QUrl& src) {
-    if (!owner) return;
-    QMetaObject::invokeMethod(owner, [owner, fileName, dir, src]{
-        auto *info = new DownloadInfo(fileName, dir, src, owner);
-        emit owner->downloadFinished(info);
-    }, Qt::QueuedConnection);
+    if (!owner)
+        return;
+    QMetaObject::invokeMethod(
+        owner,
+        [owner, fileName, dir, src] {
+            auto* info = new DownloadInfo(fileName, dir, src, owner);
+            emit owner->downloadFinished(info);
+        },
+        Qt::QueuedConnection);
 }
-
-
-
 
 // =======================
 // Impl
 // =======================
 struct WKWebViewWidget::Impl {
-    WKWebView*               wk        = nil;
-    WKNavDelegate*           delegate  = nil;
-    WKUserContentController* ucc       = nil;
-    FitUrlMsgHandler*        msg       = nil;
-    QString                  downloadDir; // es. ~/Downloads
-    id                       eventMonitor = nil;
+    WKWebView* wk = nil;
+    WKNavDelegate* delegate = nil;
+    WKUserContentController* ucc = nil;
+    FitUrlMsgHandler* msg = nil;
+    QString downloadDir; // es. ~/Downloads
+    id eventMonitor = nil;
 
     // --- UA ---
-    QString                  customUA;  // override UA (se non vuoto)
-    QString                  appUA;     // suffix via configuration (opzionale)
+    QString customUA; // override UA (se non vuoto)
+    QString appUA;    // suffix via configuration (opzionale)
 };
 
 // =======================
@@ -86,19 +86,23 @@ static NSURL* toNSURL(QUrl u);
 - (void)_fitCopyURL:(NSMenuItem*)item;
 @end
 
+static inline NSString* FITURLStr(NSURL* u) {
+    return u ? u.absoluteString : @"(nil)";
+}
 
-static inline NSString* FITURLStr(NSURL *u) { return u ? u.absoluteString : @"(nil)"; }
-
-static inline bool fit_should_ignore_navigation_error(NSError *error) {
-    if (!error) return false;
-    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return true;
+static inline bool fit_should_ignore_navigation_error(NSError* error) {
+    if (!error)
+        return false;
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled)
+        return true;
     // Emitted when navigation is intentionally interrupted by download policy.
-    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102) return true;
+    if ([error.domain isEqualToString:@"WebKitErrorDomain"] && error.code == 102)
+        return true;
     return false;
 }
 
 static NSString* FIT_CurrentLang(void) {
-    NSString *lang = NSLocale.preferredLanguages.firstObject ?: @"en";
+    NSString* lang = NSLocale.preferredLanguages.firstObject ?: @"en";
     // normalizza es. "it-IT" -> "it"
     NSRange dash = [lang rangeOfString:@"-"];
     return (dash.location != NSNotFound) ? [lang substringToIndex:dash.location] : lang;
@@ -108,67 +112,72 @@ static NSString* FIT_T(NSString* key) {
     static NSDictionary *en, *it;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        en = @{
-            @"menu.openLink":     @"Open link",
-            @"menu.copyLink":     @"Copy link address",
-            @"menu.openImage":    @"Open image",
-            @"menu.copyImageURL": @"Copy image URL",
-            @"menu.downloadImage":@"Download image…",
-            @"error.title":    @"Can’t load this page",
-            @"error.reason":   @"The site may not exist or be temporarily unreachable.",
-            @"error.retry":    @"Retry",
-            @"error.close":    @"Close",
-        };
-        it = @{
-            @"menu.openLink":     @"Apri link",
-            @"menu.copyLink":     @"Copia indirizzo link",
-            @"menu.openImage":    @"Apri immagine",
-            @"menu.copyImageURL": @"Copia URL immagine",
-            @"menu.downloadImage":@"Scarica immagine…",
-            @"error.title":    @"Impossibile caricare la pagina",
-            @"error.reason":   @"Il sito potrebbe essere inesistente o momentaneamente non raggiungibile.",
-            @"error.retry":    @"Riprova",
-            @"error.close":    @"Chiudi",
-        };
+      en = @{
+          @"menu.openLink" : @"Open link",
+          @"menu.copyLink" : @"Copy link address",
+          @"menu.openImage" : @"Open image",
+          @"menu.copyImageURL" : @"Copy image URL",
+          @"menu.downloadImage" : @"Download image…",
+          @"error.title" : @"Can’t load this page",
+          @"error.reason" : @"The site may not exist or be temporarily unreachable.",
+          @"error.retry" : @"Retry",
+          @"error.close" : @"Close",
+      };
+      it = @{
+          @"menu.openLink" : @"Apri link",
+          @"menu.copyLink" : @"Copia indirizzo link",
+          @"menu.openImage" : @"Apri immagine",
+          @"menu.copyImageURL" : @"Copia URL immagine",
+          @"menu.downloadImage" : @"Scarica immagine…",
+          @"error.title" : @"Impossibile caricare la pagina",
+          @"error.reason" : @"Il sito potrebbe essere inesistente o momentaneamente non raggiungibile.",
+          @"error.retry" : @"Riprova",
+          @"error.close" : @"Chiudi",
+      };
     });
-    NSString *lang = FIT_CurrentLang();
-    NSDictionary *tbl = [lang isEqualToString:@"it"] ? it : en;
+    NSString* lang = FIT_CurrentLang();
+    NSDictionary* tbl = [lang isEqualToString:@"it"] ? it : en;
     return tbl[key] ?: en[key] ?: key;
 }
 
 // --- Helpers di I/O immagine ---
 static inline bool writeNSDataToFile(NSData* data, const QString& qpath, QString& err) {
-    if (!data) { err = QStringLiteral("No data"); return false; }
-    NSString *path = [NSString stringWithUTF8String:qpath.toUtf8().constData()];
-    if (!path.length) { err = QStringLiteral("Empty path"); return false; }
-    NSError *nserr = nil;
+    if (!data) {
+        err = QStringLiteral("No data");
+        return false;
+    }
+    NSString* path = [NSString stringWithUTF8String:qpath.toUtf8().constData()];
+    if (!path.length) {
+        err = QStringLiteral("Empty path");
+        return false;
+    }
+    NSError* nserr = nil;
     BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:&nserr];
-    if (!ok) err = nserr ? QString::fromUtf8(nserr.localizedDescription.UTF8String)
-                         : QStringLiteral("Write failed");
+    if (!ok)
+        err = nserr ? QString::fromUtf8(nserr.localizedDescription.UTF8String) : QStringLiteral("Write failed");
     return ok;
 }
 
 // Fallback: cattura la NSView come PNG se takeSnapshot fallisce
-static NSData* SnapshotViewPNG(NSView *view) {
-    if (!view) return nil;
+static NSData* SnapshotViewPNG(NSView* view) {
+    if (!view)
+        return nil;
     const NSRect r = view.bounds;
-    NSBitmapImageRep *rep = [view bitmapImageRepForCachingDisplayInRect:r];
-    if (!rep) return nil;
+    NSBitmapImageRep* rep = [view bitmapImageRepForCachingDisplayInRect:r];
+    if (!rep)
+        return nil;
     [view cacheDisplayInRect:r toBitmapImageRep:rep];
     return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
 }
 
-
-
-template <typename F>
-static quint64 ensureOnGuiThread(QObject* obj, F&& fn) {
+template <typename F> static quint64 ensureOnGuiThread(QObject* obj, F&& fn) {
     const bool isGui = (QThread::currentThread() == qApp->thread());
     static std::atomic<quint64> s_tokenGen{0};
     const quint64 token = ++s_tokenGen;
     if (isGui) {
         fn(token);
     } else {
-        QMetaObject::invokeMethod(obj, [fn, token](){ fn(token); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(obj, [fn, token]() { fn(token); }, Qt::QueuedConnection);
     }
     return token;
 }
@@ -183,13 +192,14 @@ static inline NSNumber* FITNumberOrNil(id obj) {
     return [obj isKindOfClass:NSNumber.class] ? (NSNumber*)obj : nil;
 }
 
-- (void)userContentController:(WKUserContentController *)userContentController
-      didReceiveScriptMessage:(WKScriptMessage *)message
-{
-    if (!self.owner) return;
+- (void)userContentController:(WKUserContentController*)userContentController
+      didReceiveScriptMessage:(WKScriptMessage*)message {
+    if (!self.owner)
+        return;
 
     if ([message.name isEqualToString:@"fitUrlChanged"]) {
-        if (![message.body isKindOfClass:[NSString class]]) return;
+        if (![message.body isKindOfClass:[NSString class]])
+            return;
 
         QString s = QString::fromUtf8([(NSString*)message.body UTF8String]);
         QUrl qurl = QUrl::fromEncoded(s.toUtf8());
@@ -214,59 +224,65 @@ static inline NSNumber* FITNumberOrNil(id obj) {
     }
 
     if ([message.name isEqualToString:@"fitContextMenu"]) {
-        if (![message.body isKindOfClass:[NSDictionary class]]) return;
+        if (![message.body isKindOfClass:[NSDictionary class]])
+            return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self _fitShowContextMenuFromPayload:(NSDictionary*)message.body];
+          [self _fitShowContextMenuFromPayload:(NSDictionary*)message.body];
         });
         return;
     }
 }
 
-- (void)_fitShowContextMenuFromPayload:(NSDictionary*)payload
-{
+- (void)_fitShowContextMenuFromPayload:(NSDictionary*)payload {
     WKWebView* wv = self.webView;
-    if (!wv || !wv.window) return;
+    if (!wv || !wv.window)
+        return;
 
-    NSString *linkStr = FITStringOrNil(payload[@"link"]);
-    NSString *imgStr  = FITStringOrNil(payload[@"image"]);
-    NSURL *linkURL = (linkStr.length ? [NSURL URLWithString:linkStr] : nil);
-    NSURL *imgURL  = (imgStr.length  ? [NSURL URLWithString:imgStr]  : nil);
-    if (!linkURL && !imgURL) return;
+    NSString* linkStr = FITStringOrNil(payload[@"link"]);
+    NSString* imgStr = FITStringOrNil(payload[@"image"]);
+    NSURL* linkURL = (linkStr.length ? [NSURL URLWithString:linkStr] : nil);
+    NSURL* imgURL = (imgStr.length ? [NSURL URLWithString:imgStr] : nil);
+    if (!linkURL && !imgURL)
+        return;
 
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
 
     if (linkURL) {
-        NSMenuItem *open = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openLink")
-                                              action:@selector(_fitOpenLink:)
-                                       keyEquivalent:@""];
-        open.target = self; open.representedObject = @{@"url": linkURL};
+        NSMenuItem* open = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openLink")
+                                                      action:@selector(_fitOpenLink:)
+                                               keyEquivalent:@""];
+        open.target = self;
+        open.representedObject = @{@"url" : linkURL};
         [menu addItem:open];
 
-        NSMenuItem *copy = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyLink")
-                                              action:@selector(_fitCopyURL:)
-                                       keyEquivalent:@""];
-        copy.target = self; copy.representedObject = @{@"url": linkURL};
+        NSMenuItem* copy = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyLink")
+                                                      action:@selector(_fitCopyURL:)
+                                               keyEquivalent:@""];
+        copy.target = self;
+        copy.representedObject = @{@"url" : linkURL};
         [menu addItem:copy];
     }
 
     if (imgURL) {
-        NSMenuItem *openImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openImage")
-                                                 action:@selector(_fitOpenLink:)
-                                          keyEquivalent:@""];
-        openImg.target = self; openImg.representedObject = @{@"url": imgURL};
+        NSMenuItem* openImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.openImage")
+                                                         action:@selector(_fitOpenLink:)
+                                                  keyEquivalent:@""];
+        openImg.target = self;
+        openImg.representedObject = @{@"url" : imgURL};
         [menu addItem:openImg];
 
-        NSMenuItem *copyImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyImageURL")
-                                                 action:@selector(_fitCopyURL:)
-                                          keyEquivalent:@""];
-        copyImg.target = self; copyImg.representedObject = @{@"url": imgURL};
+        NSMenuItem* copyImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.copyImageURL")
+                                                         action:@selector(_fitCopyURL:)
+                                                  keyEquivalent:@""];
+        copyImg.target = self;
+        copyImg.representedObject = @{@"url" : imgURL};
         [menu addItem:copyImg];
 
-        NSMenuItem *dlImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.downloadImage")
-                                               action:@selector(_fitDownloadImage:)
-                                        keyEquivalent:@""];
+        NSMenuItem* dlImg = [[NSMenuItem alloc] initWithTitle:FIT_T(@"menu.downloadImage")
+                                                       action:@selector(_fitDownloadImage:)
+                                                keyEquivalent:@""];
         dlImg.target = self;
-        dlImg.representedObject = @{@"url": imgURL};
+        dlImg.representedObject = @{@"url" : imgURL};
         [menu addItem:[NSMenuItem separatorItem]];
         [menu addItem:dlImg];
     }
@@ -276,117 +292,126 @@ static inline NSNumber* FITNumberOrNil(id obj) {
     NSPoint inView = [wv convertPoint:inWindow fromView:nil];
 
     [menu popUpMenuPositioningItem:nil atLocation:inView inView:wv];
+#if !__has_feature(objc_arc)
+    [menu release];
+#endif
 }
 
 - (void)_fitOpenLink:(NSMenuItem*)item {
-    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
-    if (!url || !self.webView) return;
+    NSURL* url = ((NSDictionary*)item.representedObject)[@"url"];
+    if (!url || !self.webView)
+        return;
     [self.webView loadRequest:[NSURLRequest requestWithURL:url]];
 }
 
 - (void)_fitCopyURL:(NSMenuItem*)item {
-    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
-    if (!url) return;
-    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    NSURL* url = ((NSDictionary*)item.representedObject)[@"url"];
+    if (!url)
+        return;
+    NSString* absolute = url.absoluteString;
+    if (!absolute.length)
+        return;
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
     [pb clearContents];
-    [pb setString:url.absoluteString forType:NSPasteboardTypeString];
+    [pb setString:absolute forType:NSPasteboardTypeString];
 }
 
 // Utility: crea nome unico in una cartella
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
     NSString* fname = filename.length ? filename : @"download";
     NSString* path = [baseDir stringByAppendingPathComponent:fname];
     NSFileManager* fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:path]) return path;
+    if (![fm fileExistsAtPath:path])
+        return path;
 
     NSString* name = [fname stringByDeletingPathExtension];
-    NSString* ext  = [fname pathExtension];
+    NSString* ext = [fname pathExtension];
     for (NSUInteger i = 1; i < 10000; ++i) {
-        NSString* cand = ext.length
-        ? [NSString stringWithFormat:@"%@ (%lu).%@", name, (unsigned long)i, ext]
-        : [NSString stringWithFormat:@"%@ (%lu)", name, (unsigned long)i];
+        NSString* cand = ext.length ? [NSString stringWithFormat:@"%@ (%lu).%@", name, (unsigned long)i, ext]
+                                    : [NSString stringWithFormat:@"%@ (%lu)", name, (unsigned long)i];
         NSString* candPath = [baseDir stringByAppendingPathComponent:cand];
-        if (![fm fileExistsAtPath:candPath]) return candPath;
+        if (![fm fileExistsAtPath:candPath])
+            return candPath;
     }
     return path;
 }
 
 // Scarica un URL (usato dall’azione immagine)
-- (void)_fitDownloadURL:(NSURL *)url suggestedName:(NSString *)suggestedName {
-    if (!url || !self.owner) return;
+- (void)_fitDownloadURL:(NSURL*)url suggestedName:(NSString*)suggestedName {
+    if (!url || !self.owner)
+        return;
 
     // cartella destinazione da Qt
     QString qdir = self.owner->downloadDirectory();
-    NSString *destDir = [NSString stringWithUTF8String:qdir.toUtf8().constData()];
-    if (!destDir.length) destDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads"];
+    NSString* destDir = [NSString stringWithUTF8String:qdir.toUtf8().constData()];
+    if (!destDir.length)
+        destDir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads"];
     [[NSFileManager defaultManager] createDirectoryAtPath:destDir
                               withIntermediateDirectories:YES
-                                               attributes:nil error:nil];
+                                               attributes:nil
+                                                    error:nil];
 
     // nome iniziale
-    NSString *fname = suggestedName.length ? suggestedName : (url.lastPathComponent.length ? url.lastPathComponent : @"download");
-    NSString *tmpTarget = fit_uniquePath(destDir, fname);
+    NSString* fname =
+        suggestedName.length ? suggestedName : (url.lastPathComponent.length ? url.lastPathComponent : @"download");
+    NSString* tmpTarget = fit_uniquePath(destDir, fname);
 
     // segnala start (nome provvisorio)
-    fit_emit_downloadStarted(self.owner,
-                             QString::fromUtf8([tmpTarget lastPathComponent].UTF8String),
+    fit_emit_downloadStarted(self.owner, QString::fromUtf8([tmpTarget lastPathComponent].UTF8String),
                              QString::fromUtf8(tmpTarget.UTF8String));
 
-    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    NSURLSessionDownloadTask *task =
-    [session downloadTaskWithURL:url
-               completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error)
-    {
-        if (error) {
-            fit_emit_downloadFailed(self.owner,
-                QString::fromUtf8(tmpTarget.UTF8String),
-                QString::fromUtf8(error.localizedDescription.UTF8String));
-            return;
-        }
+    NSURLSessionConfiguration* cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+    NSURLSession* session = [NSURLSession sessionWithConfiguration:cfg];
+    NSURLSessionDownloadTask* task = [session
+        downloadTaskWithURL:url
+          completionHandler:^(NSURL* location, NSURLResponse* response, NSError* error) {
+            if (error) {
+                fit_emit_downloadFailed(self.owner, QString::fromUtf8(tmpTarget.UTF8String),
+                                        QString::fromUtf8(error.localizedDescription.UTF8String));
+                return;
+            }
 
-        // usa il suggerimento del server se c’è
-        NSString *serverName = response.suggestedFilename.length ? response.suggestedFilename : [tmpTarget lastPathComponent];
-        NSString *finalPath  = fit_uniquePath(destDir, serverName);
+            // usa il suggerimento del server se c’è
+            NSString* serverName =
+                response.suggestedFilename.length ? response.suggestedFilename : [tmpTarget lastPathComponent];
+            NSString* finalPath = fit_uniquePath(destDir, serverName);
 
-        NSError *mvErr = nil;
-        [[NSFileManager defaultManager] moveItemAtURL:location
-                                                toURL:[NSURL fileURLWithPath:finalPath]
-                                                error:&mvErr];
-        if (mvErr) {
-            fit_emit_downloadFailed(self.owner,
-                QString::fromUtf8(finalPath.UTF8String),
-                QString::fromUtf8(mvErr.localizedDescription.UTF8String));
-            return;
-        }
+            NSError* mvErr = nil;
+            [[NSFileManager defaultManager] moveItemAtURL:location
+                                                    toURL:[NSURL fileURLWithPath:finalPath]
+                                                    error:&mvErr];
+            if (mvErr) {
+                fit_emit_downloadFailed(self.owner, QString::fromUtf8(finalPath.UTF8String),
+                                        QString::fromUtf8(mvErr.localizedDescription.UTF8String));
+                return;
+            }
 
-        QUrl qsrc = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
-        fit_emit_downloadFinished(self.owner,
-            QString::fromUtf8([finalPath lastPathComponent].UTF8String),
-            QString::fromUtf8([finalPath stringByDeletingLastPathComponent].UTF8String),
-            qsrc);
-    }];
+            QUrl qsrc = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
+            fit_emit_downloadFinished(self.owner, QString::fromUtf8([finalPath lastPathComponent].UTF8String),
+                                      QString::fromUtf8([finalPath stringByDeletingLastPathComponent].UTF8String),
+                                      qsrc);
+          }];
     [task resume];
 }
 
 - (void)_fitDownloadImage:(NSMenuItem*)item {
-    NSURL *url = ((NSDictionary*)item.representedObject)[@"url"];
+    NSURL* url = ((NSDictionary*)item.representedObject)[@"url"];
     [self _fitDownloadURL:url suggestedName:nil];
 }
 @end
-
 
 // ===== WKNavDelegate =====
 @interface WKNavDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate>
 @property(nonatomic, assign) WKWebViewWidget* owner;
 // mappe per download
-@property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;   // weak key -> strong value
-@property(nonatomic, strong) NSHashTable<WKDownload*>* activeDownloads;         // weak set
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;        // weak key -> strong value
+@property(nonatomic, strong) NSHashTable<WKDownload*>* activeDownloads;                // weak set
 @property(nonatomic, strong) NSMapTable<NSProgress*, WKDownload*>* progressToDownload; // weak->weak
-@property(nonatomic, strong) NSHashTable<NSProgress*>* completedProgresses;      // weak set
-@property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals; // weak->strong
-@property(nonatomic, strong) NSMapTable<WKDownload*, NSURL*>*     sourceURLs;      // weak->strong
-@property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>*  suggestedNames;  // weak->strong
+@property(nonatomic, strong) NSHashTable<NSProgress*>* completedProgresses;            // weak set
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSNumber*>* expectedTotals;       // weak->strong
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSURL*>* sourceURLs;              // weak->strong
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* suggestedNames;       // weak->strong
 @property(nonatomic, strong) NSURL* pendingPopupParentURL;
 @property(nonatomic, strong) NSURL* pendingPopupChildURL;
 @property(nonatomic, assign) WKWebView* webView;
@@ -395,74 +420,81 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 @implementation WKNavDelegate
 
 - (instancetype)init {
-    if ((self = [super init])) {
-        _downloadPaths = [NSMapTable weakToStrongObjectsMapTable];
-        _activeDownloads = [NSHashTable weakObjectsHashTable];
-        _progressToDownload = [NSMapTable weakToWeakObjectsMapTable];
-        _completedProgresses = [NSHashTable weakObjectsHashTable];
-        _expectedTotals = [NSMapTable weakToStrongObjectsMapTable];
-        _sourceURLs     = [NSMapTable weakToStrongObjectsMapTable];
-        _suggestedNames = [NSMapTable weakToStrongObjectsMapTable];
-    }
+    self = [super init];
+    if (!self)
+        return nil;
+    _downloadPaths = [NSMapTable weakToStrongObjectsMapTable];
+    _activeDownloads = [NSHashTable weakObjectsHashTable];
+    _progressToDownload = [NSMapTable weakToWeakObjectsMapTable];
+    _completedProgresses = [NSHashTable weakObjectsHashTable];
+    _expectedTotals = [NSMapTable weakToStrongObjectsMapTable];
+    _sourceURLs = [NSMapTable weakToStrongObjectsMapTable];
+    _suggestedNames = [NSMapTable weakToStrongObjectsMapTable];
     return self;
+}
+
+- (void)dealloc {
+#if !__has_feature(objc_arc)
+    [_downloadPaths release];
+    [_activeDownloads release];
+    [_progressToDownload release];
+    [_completedProgresses release];
+    [_expectedTotals release];
+    [_sourceURLs release];
+    [_suggestedNames release];
+    [_pendingPopupParentURL release];
+    [_pendingPopupChildURL release];
+    [super dealloc];
+#endif
 }
 
 #pragma mark - Navigazione
 // 1a) Navigation: intercetta click con targetFrame == nil (tipico di _blank)
-- (void)webView:(WKWebView *)webView
-decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
-decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
-{
+- (void)webView:(WKWebView*)webView
+    decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
     decisionHandler(WKNavigationActionPolicyAllow);
 }
 
-
 // 1b) UI: invocato quando la pagina chiede esplicitamente una nuova webview
-- (WKWebView *)webView:(WKWebView *)webView
-createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
- forNavigationAction:(WKNavigationAction *)navigationAction
-          windowFeatures:(WKWindowFeatures *)windowFeatures
-{
+- (WKWebView*)webView:(WKWebView*)webView
+    createWebViewWithConfiguration:(WKWebViewConfiguration*)configuration
+               forNavigationAction:(WKNavigationAction*)navigationAction
+                    windowFeatures:(WKWindowFeatures*)windowFeatures {
     if (navigationAction.targetFrame == nil || !navigationAction.targetFrame.isMainFrame) {
-        NSURL *parent = webView.URL;
-        NSURL *child  = navigationAction.request.URL;
+        NSURL* parent = webView.URL;
+        NSURL* child = navigationAction.request.URL;
 
         // salva coppia padre/figlio per il “ritorno” post-download
         self.pendingPopupParentURL = parent;
-        self.pendingPopupChildURL  = child;
+        self.pendingPopupChildURL = child;
 
         if (child) {
-            [webView loadRequest:navigationAction.request];   // apri nella stessa webview
+            [webView loadRequest:navigationAction.request]; // apri nella stessa webview
         }
     }
 
     return nil; // restituisci nil per NON creare una nuova finestra
 }
 
-
-- (void)webView:(WKWebView *)webView
-didFailProvisionalNavigation:(WKNavigation *)navigation
-       withError:(NSError *)error
-{
-    if (!self.owner) return;
-    if (fit_should_ignore_navigation_error(error)) return;
+- (void)webView:(WKWebView*)webView didFailProvisionalNavigation:(WKNavigation*)navigation withError:(NSError*)error {
+    if (!self.owner)
+        return;
+    if (fit_should_ignore_navigation_error(error))
+        return;
     emit self.owner->loadFinished(false);
     emit self.owner->loadProgress(0);
     emit self.owner->canGoBackChanged(webView.canGoBack);
     emit self.owner->canGoForwardChanged(webView.canGoForward);
 
-    QUrl qurl = webView.URL
-        ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String))
-        : QUrl();
-    self.owner->renderErrorPage(qurl,
-        QString::fromUtf8(error.localizedDescription.UTF8String),
-        /*httpStatus*/ 0);
+    QUrl qurl = webView.URL ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)) : QUrl();
+    self.owner->renderErrorPage(qurl, QString::fromUtf8(error.localizedDescription.UTF8String),
+                                /*httpStatus*/ 0);
 }
 
-
-
-- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
-    if (!self.owner) return;
+- (void)webView:(WKWebView*)webView didStartProvisionalNavigation:(WKNavigation*)navigation {
+    if (!self.owner)
+        return;
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
@@ -472,8 +504,9 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     emit self.owner->canGoForwardChanged(webView.canGoForward);
 }
 
-- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
-    if (!self.owner) return;
+- (void)webView:(WKWebView*)webView didCommitNavigation:(WKNavigation*)navigation {
+    if (!self.owner)
+        return;
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
@@ -483,16 +516,18 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     emit self.owner->canGoForwardChanged(webView.canGoForward);
 }
 
-- (void)webView:(WKWebView *)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {
-    if (!self.owner) return;
+- (void)webView:(WKWebView*)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation*)navigation {
+    if (!self.owner)
+        return;
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
         emit self.owner->urlChanged(qurl);
     }
 }
 
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
-    if (!self.owner) return;
+- (void)webView:(WKWebView*)webView didFinishNavigation:(WKNavigation*)navigation {
+    if (!self.owner)
+        return;
     emit self.owner->loadFinished(true);
     if (webView.URL) {
         QUrl qurl = QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String));
@@ -507,47 +542,45 @@ didFailProvisionalNavigation:(WKNavigation *)navigation
     emit self.owner->canGoForwardChanged(webView.canGoForward);
 }
 
-- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
-    if (!self.owner) return;
-    if (fit_should_ignore_navigation_error(error)) return;
+- (void)webView:(WKWebView*)webView didFailNavigation:(WKNavigation*)navigation withError:(NSError*)error {
+    if (!self.owner)
+        return;
+    if (fit_should_ignore_navigation_error(error))
+        return;
     emit self.owner->loadFinished(false);
     emit self.owner->loadProgress(0);
     emit self.owner->canGoBackChanged(webView.canGoBack);
     emit self.owner->canGoForwardChanged(webView.canGoForward);
     // Mostra pagina d'errore interna
-    QUrl qurl = webView.URL
-    ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String))
-    : QUrl();
-    self.owner->renderErrorPage(qurl,
-    QString::fromUtf8(error.localizedDescription.UTF8String),
-    /*httpStatus*/ 0);
+    QUrl qurl = webView.URL ? QUrl::fromEncoded(QByteArray(webView.URL.absoluteString.UTF8String)) : QUrl();
+    self.owner->renderErrorPage(qurl, QString::fromUtf8(error.localizedDescription.UTF8String),
+                                /*httpStatus*/ 0);
 }
 
 #pragma mark - Decide download vs render
 
-- (void)webView:(WKWebView *)webView
-decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
-decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
-{
-    NSURLResponse *resp = navigationResponse.response;
-    NSURL *url = resp.URL;
+- (void)webView:(WKWebView*)webView
+    decidePolicyForNavigationResponse:(WKNavigationResponse*)navigationResponse
+                      decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
+    NSURLResponse* resp = navigationResponse.response;
+    NSURL* url = resp.URL;
 
     BOOL isAttachment = NO;
     if ([resp isKindOfClass:NSHTTPURLResponse.class]) {
-        NSHTTPURLResponse *http = (NSHTTPURLResponse *)resp;
-        NSString *cd = http.allHeaderFields[@"Content-Disposition"];
+        NSHTTPURLResponse* http = (NSHTTPURLResponse*)resp;
+        NSString* cd = http.allHeaderFields[@"Content-Disposition"];
         if (cd && [[cd lowercaseString] containsString:@"attachment"]) {
             isAttachment = YES;
         }
         // 🔎 Se è main frame e status HTTP >= 400, mostra pagina d'errore custom
-       if (navigationResponse.isForMainFrame && http.statusCode >= 400 && self.owner) {
-           QUrl qurl = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
-           self.owner->renderErrorPage(qurl,
-               QStringLiteral(""),             // reason generica localizzata dal template
-                (int)http.statusCode);
+        if (navigationResponse.isForMainFrame && http.statusCode >= 400 && self.owner) {
+            QUrl qurl = QUrl::fromEncoded(QByteArray(url.absoluteString.UTF8String));
+            self.owner->renderErrorPage(qurl,
+                                        QStringLiteral(""), // reason generica localizzata dal template
+                                        (int)http.statusCode);
             decisionHandler(WKNavigationResponsePolicyCancel);
-           return;
-       }
+            return;
+        }
     }
 
     if (isAttachment) {
@@ -564,10 +597,9 @@ decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
 
 #pragma mark - Diventare download
 
-- (void)webView:(WKWebView *)webView
-navigationAction:(WKNavigationAction *)navigationAction
-didBecomeDownload:(WKDownload *)download
-{
+- (void)webView:(WKWebView*)webView
+     navigationAction:(WKNavigationAction*)navigationAction
+    didBecomeDownload:(WKDownload*)download {
     download.delegate = self;
 
     if (![self.activeDownloads containsObject:download]) {
@@ -580,23 +612,25 @@ didBecomeDownload:(WKDownload *)download
     }
 
     // KVO su NSProgress (3 keyPath, con INITIAL)
-    [download.progress addObserver:self forKeyPath:@"fractionCompleted"
+    [download.progress addObserver:self
+                        forKeyPath:@"fractionCompleted"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
-    [download.progress addObserver:self forKeyPath:@"completedUnitCount"
+    [download.progress addObserver:self
+                        forKeyPath:@"completedUnitCount"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
-    [download.progress addObserver:self forKeyPath:@"totalUnitCount"
+    [download.progress addObserver:self
+                        forKeyPath:@"totalUnitCount"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
 
     [self.progressToDownload setObject:download forKey:download.progress];
 }
 
-- (void)webView:(WKWebView *)webView
-navigationResponse:(WKNavigationResponse *)navigationResponse
-didBecomeDownload:(WKDownload *)download
-{
+- (void)webView:(WKWebView*)webView
+    navigationResponse:(WKNavigationResponse*)navigationResponse
+     didBecomeDownload:(WKDownload*)download {
     download.delegate = self;
 
     if (![self.activeDownloads containsObject:download]) {
@@ -607,13 +641,16 @@ didBecomeDownload:(WKDownload *)download
         [self.sourceURLs setObject:navigationResponse.response.URL forKey:download];
     }
 
-    [download.progress addObserver:self forKeyPath:@"fractionCompleted"
+    [download.progress addObserver:self
+                        forKeyPath:@"fractionCompleted"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
-    [download.progress addObserver:self forKeyPath:@"completedUnitCount"
+    [download.progress addObserver:self
+                        forKeyPath:@"completedUnitCount"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
-    [download.progress addObserver:self forKeyPath:@"totalUnitCount"
+    [download.progress addObserver:self
+                        forKeyPath:@"totalUnitCount"
                            options:(NSKeyValueObservingOptionNew | NSKeyValueObservingOptionInitial)
                            context:NULL];
 
@@ -622,46 +659,47 @@ didBecomeDownload:(WKDownload *)download
 
 #pragma mark - Scegli destinazione
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 static NSString* uniquePath(NSString* baseDir, NSString* filename) {
     NSString* fname = filename ?: @"download";
     NSString* path = [baseDir stringByAppendingPathComponent:fname];
     NSFileManager* fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:path]) return path;
+    if (![fm fileExistsAtPath:path])
+        return path;
 
     NSString* name = [fname stringByDeletingPathExtension];
-    NSString* ext  = [fname pathExtension];
+    NSString* ext = [fname pathExtension];
     for (NSUInteger i = 1; i < 10000; ++i) {
-        NSString* cand = ext.length
-            ? [NSString stringWithFormat:@"%@ (%lu).%@", name, (unsigned long)i, ext]
-            : [NSString stringWithFormat:@"%@ (%lu)", name, (unsigned long)i];
+        NSString* cand = ext.length ? [NSString stringWithFormat:@"%@ (%lu).%@", name, (unsigned long)i, ext]
+                                    : [NSString stringWithFormat:@"%@ (%lu)", name, (unsigned long)i];
         NSString* candPath = [baseDir stringByAppendingPathComponent:cand];
-        if (![fm fileExistsAtPath:candPath]) return candPath;
+        if (![fm fileExistsAtPath:candPath])
+            return candPath;
     }
     return path;
 }
 
-- (void)download:(WKDownload *)download
-decideDestinationUsingResponse:(NSURLResponse *)response
-suggestedFilename:(NSString *)suggestedFilename
-completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
-{
-    if (!self.owner) { completionHandler(nil); return; }
+- (void)download:(WKDownload*)download
+    decideDestinationUsingResponse:(NSURLResponse*)response
+                 suggestedFilename:(NSString*)suggestedFilename
+                 completionHandler:(void (^)(NSURL* _Nullable destination))completionHandler {
+    if (!self.owner) {
+        completionHandler(nil);
+        return;
+    }
 
     QString qdir = self.owner->downloadDirectory();
     NSString* dir = [NSString stringWithUTF8String:qdir.toUtf8().constData()];
-    if (!dir.length) dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads"];
+    if (!dir.length)
+        dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Downloads"];
 
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-                              withIntermediateDirectories:YES
-                                               attributes:nil error:nil];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
 
     NSString* finalPath = uniquePath(dir, suggestedFilename ?: @"download");
     [self.downloadPaths setObject:finalPath forKey:download];
 
-    emit self.owner->downloadStarted(
-        QString::fromUtf8((suggestedFilename ?: @"download").UTF8String),
-        QString::fromUtf8(finalPath.UTF8String)
-    );
+    emit self.owner->downloadStarted(QString::fromUtf8((suggestedFilename ?: @"download").UTF8String),
+                                     QString::fromUtf8(finalPath.UTF8String));
 
     // Leggi il Content-Length se disponibile e salvalo
     long long expected = response.expectedContentLength; // -1 se sconosciuto
@@ -674,7 +712,7 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     }
 
     if (suggestedFilename) {
-    [self.suggestedNames setObject:suggestedFilename forKey:download];
+        [self.suggestedNames setObject:suggestedFilename forKey:download];
     } else if (![self.suggestedNames objectForKey:download]) {
         [self.suggestedNames setObject:@"download" forKey:download];
     }
@@ -684,9 +722,7 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 
 #pragma mark - Progress / Fine / Errore
 
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)obj
-                        change:(NSDictionary *)change context:(void *)ctx
-{
+- (void)observeValueForKeyPath:(NSString*)keyPath ofObject:(id)obj change:(NSDictionary*)change context:(void*)ctx {
     if (![obj isKindOfClass:[NSProgress class]] || !self.owner) {
         [super observeValueForKeyPath:keyPath ofObject:obj change:change context:ctx];
         return;
@@ -694,31 +730,32 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     NSProgress* prog = (NSProgress*)obj;
 
     // Calcolo grezzo fuori dal main
-    int64_t total = prog.totalUnitCount;     // -1 se sconosciuto
-    int64_t done  = prog.completedUnitCount;
+    int64_t total = prog.totalUnitCount; // -1 se sconosciuto
+    int64_t done = prog.completedUnitCount;
 
     // Dispatch su main, ma **ricontrolla** lo stato "completed" dentro al blocco
-   // DOPO (compatibile MRC)
+    // DOPO (compatibile MRC)
     __unsafe_unretained WKNavDelegate* weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        WKNavDelegate* strongSelf = weakSelf;
-        if (!strongSelf || !strongSelf.owner) return;
+      WKNavDelegate* strongSelf = weakSelf;
+      if (!strongSelf || !strongSelf.owner)
+          return;
 
-        // blocca update tardivi dopo finished/failed
-        if ([strongSelf.completedProgresses containsObject:prog]) return;
+      // blocca update tardivi dopo finished/failed
+      if ([strongSelf.completedProgresses containsObject:prog])
+          return;
 
-        WKDownload* dl = [strongSelf.progressToDownload objectForKey:prog];
-        NSNumber* exp = dl ? [strongSelf.expectedTotals objectForKey:dl] : nil;
+      WKDownload* dl = [strongSelf.progressToDownload objectForKey:prog];
+      NSNumber* exp = dl ? [strongSelf.expectedTotals objectForKey:dl] : nil;
 
-        int64_t totalEff = (total >= 0 ? total : (exp ? exp.longLongValue : -1));
-        emit strongSelf.owner->downloadProgress(done, totalEff);
+      int64_t totalEff = (total >= 0 ? total : (exp ? exp.longLongValue : -1));
+      emit strongSelf.owner->downloadProgress(done, totalEff);
     });
-
-
 }
 
-- (void)downloadDidFinish:(WKDownload *)download {
-    if (!self.owner) return;
+- (void)downloadDidFinish:(WKDownload*)download {
+    if (!self.owner)
+        return;
 
     [self.activeDownloads removeObject:download];
 
@@ -727,7 +764,8 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
         [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
         [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
-    } @catch (...) {}
+    } @catch (...) {
+    }
 
     // 2) marca come completato per filtrare update tardivi
     [self.completedProgresses addObject:download.progress];
@@ -735,49 +773,34 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     // 3) raccogli dati
     NSString* finalPath = [self.downloadPaths objectForKey:download];
     NSString* fname = [self.suggestedNames objectForKey:download];
-    if (!fname && finalPath) fname = [finalPath lastPathComponent];
+    if (!fname && finalPath)
+        fname = [finalPath lastPathComponent];
     NSString* dir = finalPath ? [finalPath stringByDeletingLastPathComponent] : nil;
     NSURL* src = [self.sourceURLs objectForKey:download];
 
     // 4) crea DownloadInfo* e emetti
     QString qFileName = fname ? QString::fromUtf8(fname.UTF8String) : QString();
-    QString qDir      = dir   ? QString::fromUtf8(dir.UTF8String)   : QString();
-    QUrl    qUrl      = src   ? QUrl::fromEncoded(QByteArray(src.absoluteString.UTF8String))
-                              : QUrl();
+    QString qDir = dir ? QString::fromUtf8(dir.UTF8String) : QString();
+    QUrl qUrl = src ? QUrl::fromEncoded(QByteArray(src.absoluteString.UTF8String)) : QUrl();
 
     DownloadInfo* info = new DownloadInfo(qFileName, qDir, qUrl, self.owner);
     emit self.owner->downloadFinished(info);
 
-    
+    WKWebView* webView = self.webView;
+    NSURL* srcURL = [self.sourceURLs objectForKey:download];
 
-    WKWebView *webView = self.webView;
-    NSURL *srcURL = [self.sourceURLs objectForKey:download];
+    if (webView && self.pendingPopupChildURL && srcURL && [srcURL isEqual:self.pendingPopupChildURL]) {
 
-    if (webView && self.pendingPopupChildURL && srcURL &&
-        [srcURL isEqual:self.pendingPopupChildURL]) {
+        WKBackForwardList* bf = webView.backForwardList;
+        NSURL* current = webView.URL;
+        NSURL* backURL = bf.backItem.URL;
 
-        WKBackForwardList *bf = webView.backForwardList;
-        NSURL *current = webView.URL;
-        NSURL *backURL = bf.backItem.URL;
-
-        // CASI:
-        // A) Sei sul FIGLIO → torna indietro alla PARENT
-        if (current && [current isEqual:self.pendingPopupChildURL]) {
+        const bool isOnChild = current && [current isEqual:self.pendingPopupChildURL];
+        const bool hasParentAsBackItem = backURL && [backURL isEqual:self.pendingPopupParentURL];
+        if (isOnChild || hasParentAsBackItem) {
             [webView goBack];
-        }
-        // B) Sei già sulla PARENT → non fare nulla
-        else if (current && [current isEqual:self.pendingPopupParentURL]) {
-            // niente
-        }
-        // C) Non sei sul child, ma l’item precedente è la PARENT → goBack
-        else if (backURL && [backURL isEqual:self.pendingPopupParentURL]) {
-            [webView goBack];
-        }
-        // D) Fallback: carica esplicitamente la PARENT
-        else if (self.pendingPopupParentURL) {
+        } else if (self.pendingPopupParentURL) {
             [webView loadRequest:[NSURLRequest requestWithURL:self.pendingPopupParentURL]];
-        } else {
-            //Niente
         }
 
         // pulizia stato
@@ -785,16 +808,17 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         self.pendingPopupParentURL = nil;
     }
     // 5) cleanup mappe
-    if (finalPath) [self.downloadPaths removeObjectForKey:download];
+    if (finalPath)
+        [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
     [self.expectedTotals removeObjectForKey:download];
     [self.sourceURLs removeObjectForKey:download];
     [self.suggestedNames removeObjectForKey:download];
 }
 
-
-- (void)download:(WKDownload *)download didFailWithError:(NSError *)error resumeData:(NSData *)resumeData {
-    if (!self.owner) return;
+- (void)download:(WKDownload*)download didFailWithError:(NSError*)error resumeData:(NSData*)resumeData {
+    if (!self.owner)
+        return;
 
     [self.activeDownloads removeObject:download];
 
@@ -803,19 +827,18 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
         [download.progress removeObserver:self forKeyPath:@"fractionCompleted"];
         [download.progress removeObserver:self forKeyPath:@"completedUnitCount"];
         [download.progress removeObserver:self forKeyPath:@"totalUnitCount"];
-    } @catch (...) {}
+    } @catch (...) {
+    }
     [self.completedProgresses addObject:download.progress];
 
     // path (se già deciso)
     NSString* finalPath = [self.downloadPaths objectForKey:download];
-    emit self.owner->downloadFailed(
-        finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString(),
-        QString::fromUtf8(error.localizedDescription.UTF8String)
-    );
+    emit self.owner->downloadFailed(finalPath ? QString::fromUtf8(finalPath.UTF8String) : QString(),
+                                    QString::fromUtf8(error.localizedDescription.UTF8String));
 
     // 🔙 Se il download proviene dal "figlio", torna alla "pagina padre"
-    WKWebView *webView = self.webView;
-    NSURL *src = [self.sourceURLs objectForKey:download];
+    WKWebView* webView = self.webView;
+    NSURL* src = [self.sourceURLs objectForKey:download];
     if (webView && self.pendingPopupChildURL && src && [src isEqual:self.pendingPopupChildURL]) {
         if (webView.canGoBack) {
             [webView goBack];
@@ -828,13 +851,13 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
     }
 
     // cleanup mappe
-    if (finalPath) [self.downloadPaths removeObjectForKey:download];
+    if (finalPath)
+        [self.downloadPaths removeObjectForKey:download];
     [self.progressToDownload removeObjectForKey:download.progress];
     [self.expectedTotals removeObjectForKey:download];
     [self.sourceURLs removeObjectForKey:download];
     [self.suggestedNames removeObjectForKey:download];
 }
-
 
 @end
 
@@ -842,7 +865,8 @@ completionHandler:(void (^)(NSURL * _Nullable destination))completionHandler
 // QUrl -> NSURL (normalizza e forza https)
 // =======================
 static NSURL* toNSURL(QUrl u) {
-    if (!u.isValid()) return nil;
+    if (!u.isValid())
+        return nil;
 
     if (u.scheme().isEmpty())
         u = QUrl::fromUserInput(u.toString());
@@ -851,18 +875,24 @@ static NSURL* toNSURL(QUrl u) {
     if (u.scheme() == "http")
         u.setScheme("https");
 
-    if (u.isLocalFile())
-        return [NSURL fileURLWithPath:[NSString stringWithUTF8String:u.toLocalFile().toUtf8().constData()]];
+    if (u.isLocalFile()) {
+        NSString* localPath = fit_nsStringFromUtf8(u.toLocalFile().toUtf8());
+        if (!localPath.length)
+            return nil;
+        return [NSURL fileURLWithPath:localPath];
+    }
 
     const QByteArray enc = u.toString(QUrl::FullyEncoded).toUtf8();
-    return [NSURL URLWithString:[NSString stringWithUTF8String:enc.constData()]];
+    NSString* encodedUrl = fit_nsStringFromUtf8(enc);
+    if (!encodedUrl.length)
+        return nil;
+    return [NSURL URLWithString:encodedUrl];
 }
 
 // =======================
 // WKWebViewWidget
 // =======================
-WKWebViewWidget::WKWebViewWidget(QWidget* parent)
-    : QWidget(parent), d(new Impl) {
+WKWebViewWidget::WKWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
     setAttribute(Qt::WA_NativeWindow, true);
     (void)winId();
 
@@ -870,7 +900,7 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     d->downloadDir = QDir::homePath() + "/Downloads";
 
-    NSView* nsParent = (__bridge NSView*)reinterpret_cast<void*>(winId());
+    NSView* nsParent = reinterpret_cast<NSView*>(static_cast<uintptr_t>(winId())); // NOLINT(performance-no-int-to-ptr)
     WKWebViewConfiguration* cfg = [[WKWebViewConfiguration alloc] init];
     if ([cfg respondsToSelector:@selector(setWebsiteDataStore:)]) {
         cfg.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
@@ -882,21 +912,23 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
     // ✅ Consenti window.open() senza creare una nuova finestra UI
     @try {
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = YES;
-    } @catch (...) {}
+    } @catch (...) {
+    }
 
     // --- Fullscreen HTML5 (via KVC tollerante) ---
-    @try {
+    @
+    try {
         [cfg.preferences setValue:@YES forKey:@"fullScreenEnabled"];
-    } @catch (NSException *e) {
+    } @catch (NSException* e) {
         // ignore if not available
     }
 
     // --- AirPlay & PiP via selector per compatibilità SDK ---
     if ([cfg respondsToSelector:@selector(setAllowsAirPlayForMediaPlayback:)]) {
-        ((void(*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsAirPlayForMediaPlayback:), YES);
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsAirPlayForMediaPlayback:), YES);
     }
     if ([cfg respondsToSelector:@selector(setAllowsPictureInPictureMediaPlayback:)]) {
-        ((void(*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsPictureInPictureMediaPlayback:), YES);
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(cfg, @selector(setAllowsPictureInPictureMediaPlayback:), YES);
     }
 
     // SPA: intercetta pushState/replaceState/popstate/click
@@ -923,7 +955,7 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
         @"    var el = ev.target;"
         @"    var a = el && el.closest ? el.closest('a[href]') : null;"
         @"    var img = el && el.closest ? el.closest('img[src]') : null;"
-        @"    if (!a && !img) return;"   // lascia il menu nativo altrove
+        @"    if (!a && !img) return;" // lascia il menu nativo altrove
         @"    ev.preventDefault();"
         @"    try {"
         @"      window.webkit.messageHandlers.fitContextMenu.postMessage({"
@@ -935,12 +967,13 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
         @"  }, true);"
         @"})();";
 
-
-    WKUserScript* us = [[WKUserScript alloc]
-        initWithSource:js
-        injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-        forMainFrameOnly:YES];
+    WKUserScript* us = [[WKUserScript alloc] initWithSource:js
+                                              injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                           forMainFrameOnly:YES];
     [d->ucc addUserScript:us];
+#if !__has_feature(objc_arc)
+    [us release];
+#endif
     cfg.userContentController = d->ucc;
 
     d->wk = [[WKWebView alloc] initWithFrame:nsParent.bounds configuration:cfg];
@@ -956,33 +989,34 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent)
 
     // Ensure Qt focus follows native clicks inside WKWebView.
     __unsafe_unretained WKWebView* weakWk = d->wk;
-    d->eventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown |
-                                                                     NSEventMaskRightMouseDown |
-                                                                     NSEventMaskOtherMouseDown |
-                                                                     NSEventMaskScrollWheel)
-                                                            handler:^NSEvent* _Nullable(NSEvent* _Nonnull event) {
-        WKWebView* wk = weakWk;
-        if (!wk || event.window != wk.window) return event;
-        NSView* hit = [wk hitTest:[event locationInWindow]];
-        if (hit && ([hit isDescendantOf:wk] || hit == wk)) {
-            if (auto *w = window()) {
-                if (QWidget *fw = w->focusWidget(); fw && fw != this) {
-                    fw->clearFocus();
-                }
-            }
-            setFocus(Qt::MouseFocusReason);
-            if (wk.window) {
-                [wk.window makeFirstResponder:wk];
-            }
-        }
-        return event;
-    }];
+    d->eventMonitor =
+        [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
+                                                       NSEventMaskOtherMouseDown | NSEventMaskScrollWheel)
+                                              handler:^NSEvent* _Nullable(NSEvent* _Nonnull event) {
+                                                WKWebView* wk = weakWk;
+                                                if (!wk || event.window != wk.window)
+                                                    return event;
+                                                NSView* hit = [wk hitTest:[event locationInWindow]];
+                                                if (hit && ([hit isDescendantOf:wk] || hit == wk)) {
+                                                    if (auto* w = window()) {
+                                                        if (QWidget* fw = w->focusWidget(); fw && fw != this) {
+                                                            fw->clearFocus();
+                                                        }
+                                                    }
+                                                    setFocus(Qt::MouseFocusReason);
+                                                    if (wk.window) {
+                                                        [wk.window makeFirstResponder:wk];
+                                                    }
+                                                }
+                                                return event;
+                                              }];
 
     applyUserAgent();
 }
 
 WKWebViewWidget::~WKWebViewWidget() {
-    if (!d) return;
+    if (!d)
+        return;
 
     if (d->eventMonitor) {
         [NSEvent removeMonitor:d->eventMonitor];
@@ -990,20 +1024,34 @@ WKWebViewWidget::~WKWebViewWidget() {
     }
 
     if (d->ucc && d->msg) {
-        @try { [d->ucc removeScriptMessageHandlerForName:@"fitUrlChanged"]; } @catch (...) {}
-        @try { [d->ucc removeScriptMessageHandlerForName:@"fitContextMenu"]; } @catch (...) {}
+        @try {
+            [d->ucc removeScriptMessageHandlerForName:@"fitUrlChanged"];
+        } @catch (...) {
+        } @
+        try {
+            [d->ucc removeScriptMessageHandlerForName:@"fitContextMenu"];
+        } @catch (...) {
+        }
     }
     d->msg = nil;
 
-    if (d->wk) { [d->wk removeFromSuperview]; d->wk = nil; }
+    if (d->wk) {
+        [d->wk removeFromSuperview];
+        d->wk = nil;
+    }
     d->delegate = nil;
     d->ucc = nil;
 
-    delete d; d = nullptr;
+    delete d;
+    d = nullptr;
 }
 
-void WKWebViewWidget::showEvent(QShowEvent* e) { QWidget::showEvent(e); }
-void WKWebViewWidget::resizeEvent(QResizeEvent* e) { QWidget::resizeEvent(e); }
+void WKWebViewWidget::showEvent(QShowEvent* e) {
+    QWidget::showEvent(e);
+}
+void WKWebViewWidget::resizeEvent(QResizeEvent* e) {
+    QWidget::resizeEvent(e);
+}
 
 void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
     QWidget::focusInEvent(e);
@@ -1018,8 +1066,8 @@ void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
 
 void WKWebViewWidget::mousePressEvent(QMouseEvent* e) {
     // Ensure Qt focus follows native focus, so shortcuts don't stay on other widgets.
-    if (auto *w = window()) {
-        if (QWidget *fw = w->focusWidget(); fw && fw != this) {
+    if (auto* w = window()) {
+        if (QWidget* fw = w->focusWidget(); fw && fw != this) {
             fw->clearFocus();
         }
     }
@@ -1063,18 +1111,23 @@ void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
 }
 
 QUrl WKWebViewWidget::url() const {
-    if (!(d && d->wk)) return QUrl();
+    if (!(d && d->wk))
+        return QUrl();
     NSURL* nsurl = d->wk.URL;
-    if (!nsurl) return QUrl();
+    if (!nsurl)
+        return QUrl();
     const char* utf8 = nsurl.absoluteString.UTF8String;
-    if (!utf8) return QUrl();
+    if (!utf8)
+        return QUrl();
     return QUrl::fromEncoded(QByteArray(utf8));
 }
 
 void WKWebViewWidget::setUrl(const QUrl& u) {
-    if (!(d && d->wk)) return;
+    if (!(d && d->wk))
+        return;
     NSURL* nsurl = toNSURL(u);
-    if (!nsurl) return;
+    if (!nsurl)
+        return;
 
     NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:nsurl];
     req.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
@@ -1082,11 +1135,21 @@ void WKWebViewWidget::setUrl(const QUrl& u) {
     [d->wk loadRequest:req];
 }
 
-void WKWebViewWidget::back()    { if (d && d->wk && d->wk.canGoBack)    [d->wk goBack]; }
-void WKWebViewWidget::forward() { if (d && d->wk && d->wk.canGoForward) [d->wk goForward]; }
-void WKWebViewWidget::stop()    { if (d && d->wk) [d->wk stopLoading:nil]; }
-void WKWebViewWidget::reload()  {
-    if (!(d && d->wk)) return;
+void WKWebViewWidget::back() {
+    if (d && d->wk && d->wk.canGoBack)
+        [d->wk goBack];
+}
+void WKWebViewWidget::forward() {
+    if (d && d->wk && d->wk.canGoForward)
+        [d->wk goForward];
+}
+void WKWebViewWidget::stop() {
+    if (d && d->wk)
+        [d->wk stopLoading:nil];
+}
+void WKWebViewWidget::reload() {
+    if (!(d && d->wk))
+        return;
     if ([d->wk respondsToSelector:@selector(reloadFromOrigin)]) {
         [d->wk reloadFromOrigin];
     } else {
@@ -1095,65 +1158,79 @@ void WKWebViewWidget::reload()  {
 }
 
 void WKWebViewWidget::clearWebsiteData() {
-    if (!(d && d->wk)) return;
+    if (!(d && d->wk))
+        return;
 
     WKWebsiteDataStore* store = nil;
     if ([d->wk.configuration respondsToSelector:@selector(websiteDataStore)]) {
         store = d->wk.configuration.websiteDataStore;
     }
-    if (!store) return;
+    if (!store)
+        return;
 
     NSSet<NSString*>* dataTypes = [WKWebsiteDataStore allWebsiteDataTypes];
     NSDate* since = [NSDate dateWithTimeIntervalSince1970:0];
 
-    [store removeDataOfTypes:dataTypes modifiedSince:since completionHandler:^{}];
+    [store removeDataOfTypes:dataTypes
+               modifiedSince:since
+           completionHandler:^{
+           }];
     [[NSURLCache sharedURLCache] removeAllCachedResponses];
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] removeCookiesSinceDate:since];
 }
 
 void WKWebViewWidget::evaluateJavaScript(const QString& script) {
-    if (!d || !d->wk) return;
-    NSString* s = [NSString stringWithUTF8String:script.toUtf8().constData()];
-    [d->wk evaluateJavaScript:s completionHandler:^(id result, NSError* error){
-        Q_UNUSED(result); Q_UNUSED(error);
-    }];
+    if (!d || !d->wk)
+        return;
+    NSString* s = fit_nsStringFromUtf8(script.toUtf8());
+    if (!s)
+        return;
+    [d->wk evaluateJavaScript:s
+            completionHandler:^(id result, NSError* error) {
+              Q_UNUSED(result);
+              Q_UNUSED(error);
+            }];
 }
 
 quint64 WKWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
-    if (!d || !d->wk) return 0;
+    if (!d || !d->wk)
+        return 0;
     const quint64 token = ++s_jsToken;
 
-    NSString* s = [NSString stringWithUTF8String:script.toUtf8().constData()];
+    NSString* s = fit_nsStringFromUtf8(script.toUtf8());
+    if (!s)
+        return 0;
 
     // ✅ usa QPointer invece di __weak
     QPointer<WKWebViewWidget> guard(this);
 
-    [d->wk evaluateJavaScript:s completionHandler:^(id result, NSError* error) {
-        WKWebViewWidget* self = guard.data();
-        if (!self) return;  // l'oggetto Qt è stato distrutto: esci in sicurezza
+    [d->wk
+        evaluateJavaScript:s
+         completionHandler:^(id result, NSError* error) {
+           WKWebViewWidget* self = guard.data();
+           if (!self)
+               return; // l'oggetto Qt è stato distrutto: esci in sicurezza
 
-        QVariant out;
-        if ([result isKindOfClass:NSString.class]) {
-            out = QString::fromUtf8([(NSString*)result UTF8String]);
-        } else if ([result isKindOfClass:NSNumber.class]) {
-            out = QVariant::fromValue([(NSNumber*)result doubleValue]);
-        } else if (!result || result == (id)kCFNull) {
-            out = QVariant();
-        } else {
-            NSData* data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
-            if (data) out = QString::fromUtf8((const char*)data.bytes, (int)data.length);
-        }
+           QVariant out;
+           if ([result isKindOfClass:NSString.class]) {
+               out = QString::fromUtf8([(NSString*)result UTF8String]);
+           } else if ([result isKindOfClass:NSNumber.class]) {
+               out = QVariant::fromValue([(NSNumber*)result doubleValue]);
+           } else if (!result || result == (id)kCFNull) {
+               out = QVariant();
+           } else {
+               NSData* data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
+               if (data)
+                   out = QString::fromUtf8((const char*)data.bytes, (int)data.length);
+           }
 
-        const QString err = error
-            ? QString::fromUtf8(error.localizedDescription.UTF8String)
-            : QString();
+           const QString err = error ? QString::fromUtf8(error.localizedDescription.UTF8String) : QString();
 
-        // rimanda sul main loop Qt; se 'self' muore prima della consegna,
-        // Qt scarta la chiamata perché il receiver non esiste più
-        QMetaObject::invokeMethod(self, [self, out, token, err]{
-            emit self->javaScriptResult(out, token, err);
-        }, Qt::QueuedConnection);
-    }];
+           // rimanda sul main loop Qt; se 'self' muore prima della consegna,
+           // Qt scarta la chiamata perché il receiver non esiste più
+           QMetaObject::invokeMethod(
+               self, [self, out, token, err] { emit self->javaScriptResult(out, token, err); }, Qt::QueuedConnection);
+         }];
 
     return token;
 }
@@ -1166,23 +1243,24 @@ QString WKWebViewWidget::downloadDirectory() const {
 }
 
 void WKWebViewWidget::setDownloadDirectory(const QString& dirPath) {
-    if (!d) return;
+    if (!d)
+        return;
     QString p = QDir::fromNativeSeparators(dirPath);
-    if (p.endsWith('/')) p.chop(1);
-    if (p.isEmpty()) return;
+    if (p.endsWith('/'))
+        p.chop(1);
+    if (p.isEmpty())
+        return;
     QDir().mkpath(p);
     d->downloadDir = p;
 }
 
-void WKWebViewWidget::renderErrorPage(const QUrl& url,
-                                      const QString& reason,
-                                      int httpStatus)
-{
-    if (!(d && d->wk)) return;
+void WKWebViewWidget::renderErrorPage(const QUrl& url, const QString& reason, int httpStatus) {
+    if (!(d && d->wk))
+        return;
 
     // Template HTML minimale, con testo bilingue (IT/EN tramite FIT_T).
     // Segnaposti: {url}, {reason}, {status}, {title}, {retry}, {close}
-   QString html = QString::fromUtf8(
+    QString html = QString::fromUtf8(
         R"FWB(<!doctype html><html lang="it"><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>{title}</title>
@@ -1232,38 +1310,39 @@ void WKWebViewWidget::renderErrorPage(const QUrl& url,
             <button class="primary" onclick="location.reload()">{retry}</button>
             <a class="ghost" href="about:blank">{close}</a>
         </div>
-        </div>)FWB"
-    );
-
-
+        </div>)FWB");
 
     // Localizza con FIT_T
     QString title = QString::fromUtf8([FIT_T(@"error.title") UTF8String]);
-    QString reasonText = reason.isEmpty()
-        ? QString::fromUtf8([FIT_T(@"error.reason") UTF8String])
-        : reason;
+    QString reasonText = reason.isEmpty() ? QString::fromUtf8([FIT_T(@"error.reason") UTF8String]) : reason;
     QString retry = QString::fromUtf8([FIT_T(@"error.retry") UTF8String]);
     QString close = QString::fromUtf8([FIT_T(@"error.close") UTF8String]);
 
-    html.replace("{title}",  title);
-    html.replace("{url}",    url.toString());
+    html.replace("{title}", title);
+    html.replace("{url}", url.toString());
     html.replace("{reason}", reasonText);
     html.replace("{status}", httpStatus > 0 ? QString("HTTP %1").arg(httpStatus) : QString());
-    html.replace("{retry}",  retry);
-    html.replace("{close}",  close);
+    html.replace("{retry}", retry);
+    html.replace("{close}", close);
 
     // Carica l'HTML direttamente nella webview
-    [d->wk loadHTMLString:[NSString stringWithUTF8String:html.toUtf8().constData()]
-                  baseURL:[NSURL URLWithString:@"about:blank"]];
+    NSString* htmlString = fit_nsStringFromUtf8(html.toUtf8());
+    if (!htmlString)
+        return;
+    [d->wk loadHTMLString:htmlString baseURL:[NSURL URLWithString:@"about:blank"]];
 }
 
 // --- NEW: metodo privato
 void WKWebViewWidget::applyUserAgent() {
-    if (!(d && d->wk)) return;
+    if (!(d && d->wk))
+        return;
     @autoreleasepool {
         // Suffix via configuration.applicationNameForUserAgent
         if (d->appUA.isEmpty()) {
-            @try { [d->wk.configuration setValue:nil forKey:@"applicationNameForUserAgent"]; } @catch(...) {}
+            @try {
+                [d->wk.configuration setValue:nil forKey:@"applicationNameForUserAgent"];
+            } @catch (...) {
+            }
         } else {
             NSString* s = [NSString stringWithUTF8String:d->appUA.toUtf8().constData()];
             @try {
@@ -1272,18 +1351,29 @@ void WKWebViewWidget::applyUserAgent() {
                 } else {
                     [d->wk.configuration setValue:s forKey:@"applicationNameForUserAgent"];
                 }
-            } @catch(...) {}
+            } @catch (...) {
+            }
         }
 
         // Override totale via customUserAgent
         if (d->customUA.isEmpty()) {
-            @try { d->wk.customUserAgent = nil; } @catch(...) {
-                @try { [d->wk setValue:nil forKey:@"customUserAgent"]; } @catch(...) {}
+            @try {
+                d->wk.customUserAgent = nil;
+            } @catch (...) {
+                @try {
+                    [d->wk setValue:nil forKey:@"customUserAgent"];
+                } @catch (...) {
+                }
             }
         } else {
             NSString* ua = [NSString stringWithUTF8String:d->customUA.toUtf8().constData()];
-            @try { d->wk.customUserAgent = ua; } @catch(...) {
-                @try { [d->wk setValue:ua forKey:@"customUserAgent"]; } @catch(...) {}
+            @try {
+                d->wk.customUserAgent = ua;
+            } @catch (...) {
+                @try {
+                    [d->wk setValue:ua forKey:@"customUserAgent"];
+                } @catch (...) {
+                }
             }
         }
     }
@@ -1291,7 +1381,8 @@ void WKWebViewWidget::applyUserAgent() {
 
 // --- API pubblica UA
 void WKWebViewWidget::setUserAgent(const QString& ua) {
-    if (!d) return;
+    if (!d)
+        return;
     d->customUA = ua.trimmed();
     applyUserAgent();
 }
@@ -1301,21 +1392,21 @@ QString WKWebViewWidget::userAgent() const {
 }
 
 void WKWebViewWidget::resetUserAgent() {
-    if (!d) return;
+    if (!d)
+        return;
     d->customUA.clear();
     applyUserAgent();
 }
 
 void WKWebViewWidget::setApplicationNameForUserAgent(const QString& appName) {
-    if (!d) return;
+    if (!d)
+        return;
     d->appUA = appName.trimmed();
     applyUserAgent();
 }
 
 quint64 WKWebViewWidget::captureVisiblePage(const QString& filePath) {
-    return ensureOnGuiThread(this, [this, filePath](quint64 token){
-        _captureVisiblePage_onGui(filePath, token);
-    });
+    return ensureOnGuiThread(this, [this, filePath](quint64 token) { _captureVisiblePage_onGui(filePath, token); });
 }
 
 quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quint64 token) {
@@ -1331,66 +1422,74 @@ quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quin
 
     // Assicura cartella
     QFileInfo fi(outPath);
-    if (!fi.dir().exists()) QDir().mkpath(fi.dir().path());
+    if (!fi.dir().exists())
+        QDir().mkpath(fi.dir().path());
 
     // Guard per vita dell’oggetto
     QPointer<WKWebViewWidget> guard(this);
 
     // Micro-delay per stabilizzare layout
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        WKWebViewWidget* self = guard.data();
-        if (!self || !(self->d && self->d->wk)) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      WKWebViewWidget* self = guard.data();
+      if (!self || !(self->d && self->d->wk))
+          return;
 
-        WKSnapshotConfiguration *cfg = [WKSnapshotConfiguration new];
-        cfg.afterScreenUpdates = YES;
-        cfg.rect = self->d->wk.bounds; // solo visibile
+      WKSnapshotConfiguration* cfg = [WKSnapshotConfiguration new];
+      cfg.afterScreenUpdates = YES;
+      cfg.rect = self->d->wk.bounds; // solo visibile
 
-        [self->d->wk takeSnapshotWithConfiguration:cfg
-                                 completionHandler:^(NSImage *snapshotImage, NSError *error) {
-            WKWebViewWidget* self2 = guard.data();
-            if (!self2 || !(self2->d && self2->d->wk)) return;
+      [self->d->wk
+          takeSnapshotWithConfiguration:cfg
+                      completionHandler:^(NSImage* snapshotImage, NSError* error) {
+                        WKWebViewWidget* self2 = guard.data();
+                        if (!self2 || !(self2->d && self2->d->wk))
+                            return;
 
-            QString err;
-            bool ok = false;
+                        QString err;
+                        bool ok = false;
 
-            if (!snapshotImage || error) {
-                // Fallback: cattura la view
-                NSData *fallbackPNG = SnapshotViewPNG(self2->d->wk);
-                if (fallbackPNG) {
-                    ok = writeNSDataToFile(fallbackPNG, outPath, err);
-                } else {
-                    err = error ? QString::fromUtf8(error.localizedDescription.UTF8String)
-                                : QStringLiteral("Snapshot failed");
-                }
-            } else {
-                // NSImage -> PNG/JPEG in base all’estensione
-                NSData *tiff = [snapshotImage TIFFRepresentation];
-                if (!tiff) {
-                    err = QStringLiteral("Empty TIFF data");
-                } else {
-                    NSBitmapImageRep* rep = [NSBitmapImageRep imageRepWithData:tiff];
-                    if (!rep) {
-                        err = QStringLiteral("No bitmap representation");
-                    } else {
-                        const QString ext = QFileInfo(outPath).suffix().toLower();
-                        NSData *data = nil;
-                        if (ext == "jpg" || ext == "jpeg") {
-                            data = [rep representationUsingType:NSBitmapImageFileTypeJPEG
-                                                    properties:@{NSImageCompressionFactor:@0.95}];
+                        if (!snapshotImage || error) {
+                            // Fallback: cattura la view
+                            NSData* fallbackPNG = SnapshotViewPNG(self2->d->wk);
+                            if (fallbackPNG) {
+                                ok = writeNSDataToFile(fallbackPNG, outPath, err);
+                            } else {
+                                err = error ? QString::fromUtf8(error.localizedDescription.UTF8String)
+                                            : QStringLiteral("Snapshot failed");
+                            }
                         } else {
-                            data = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                            // NSImage -> PNG/JPEG in base all’estensione
+                            NSData* tiff = [snapshotImage TIFFRepresentation];
+                            if (!tiff) {
+                                err = QStringLiteral("Empty TIFF data");
+                            } else {
+                                NSBitmapImageRep* rep = [NSBitmapImageRep imageRepWithData:tiff];
+                                if (!rep) {
+                                    err = QStringLiteral("No bitmap representation");
+                                } else {
+                                    const QString ext = QFileInfo(outPath).suffix().toLower();
+                                    NSData* data = nil;
+                                    if (ext == "jpg" || ext == "jpeg") {
+                                        data = [rep representationUsingType:NSBitmapImageFileTypeJPEG
+                                                                 properties:@{
+                                                                     NSImageCompressionFactor : @0.95
+                                                                 }];
+                                    } else {
+                                        data = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+                                    }
+                                    if (data)
+                                        ok = writeNSDataToFile(data, outPath, err);
+                                    else if (err.isEmpty())
+                                        err = QStringLiteral("Image encode failed");
+                                }
+                            }
                         }
-                        if (data) ok = writeNSDataToFile(data, outPath, err);
-                        else if (err.isEmpty()) err = QStringLiteral("Image encode failed");
-                    }
-                }
-            }
 
-            QMetaObject::invokeMethod(self2, [self2, token, ok, outPath, err]{
-                emit self2->captureFinished(token, ok, outPath, err);
-            }, Qt::QueuedConnection);
-        }];
+                        QMetaObject::invokeMethod(
+                            self2,
+                            [self2, token, ok, outPath, err] { emit self2->captureFinished(token, ok, outPath, err); },
+                            Qt::QueuedConnection);
+                      }];
     });
 
     return token;

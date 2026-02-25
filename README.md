@@ -95,6 +95,9 @@ Run these commands before opening a PR, so failures are caught locally first.
 ### What each tool does
 - `cmake` + `ninja`: configures and builds the native module and PySide6 binding.
 - `pytest`: runs automated tests (`unit`, `contract`, `integration` and `e2e` suites).
+- `clang-format`: checks code formatting/style consistency for C++/Objective-C++ sources.
+- `clang-tidy`: performs static analysis for bug-prone patterns and quality issues.
+- `CodeQL` (optional): performs deeper security/quality static analysis and produces a SARIF report.
 
 ### 1) Bootstrap local toolchain (macOS)
 This prepares Python virtualenvs (`3.11`, `3.12`, `3.13`) and installs Qt via `aqtinstall`.
@@ -133,19 +136,98 @@ python -m pip install -U pip
 pip install pytest
 
 # unit tests
-pytest -m unit -q tests
+pytest -m unit -q tests/macos
 
 # contract tests
-pytest -m contract -q tests
+pytest -m contract -q tests/macos
 
 # integration tests
-pytest -m integration -q tests
+FIT_WV_RUN_GUI_TESTS=1 pytest -m integration -q tests/macos
 
 # end-to-end smoke tests
-pytest -m e2e -q tests
+FIT_WV_RUN_GUI_TESTS=1 pytest -m e2e -q tests/macos
 ```
 
-Note: today the repository already contains `unit` tests and pytest markers for `contract`, `integration`, `e2e`. The latter suites can be expanded as the native test matrix grows.
+Note: `integration` and `e2e` require a GUI-capable macOS session and are gated by `FIT_WV_RUN_GUI_TESTS=1`.
+
+### 4) Native quality and security checks (macOS)
+Install native analysis tools (one-time):
+
+```bash
+brew install llvm
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+```
+
+Formatting rules are pinned in the repository via `.clang-format`.
+
+Run all native checks:
+
+```bash
+./scripts/macos/check_quality.sh
+```
+
+Note: native quality checks run with `BUILD_BINDINGS=OFF` to avoid coupling static analysis to Shiboken generation.
+
+If `clang-format` reports many violations, auto-format first:
+
+```bash
+./scripts/macos/format_macos.sh
+```
+
+`format_macos.sh` runs only the formatting stage (`clang-format`) and skips `clang-tidy`.
+
+Equivalent one-liner:
+
+```bash
+FORMAT_FIX=1 SKIP_TIDY=1 ./scripts/macos/check_quality.sh
+```
+
+Use a custom `clang-tidy` check subset:
+
+```bash
+CLANG_TIDY_CHECKS='-*,clang-analyzer-*,bugprone-*' ./scripts/macos/check_quality.sh
+```
+
+If your shell exports LLVM paths globally and `clang-tidy` configure fails due toolchain mismatch, run with a clean include env:
+
+```bash
+env -u CPATH -u CPLUS_INCLUDE_PATH -u C_INCLUDE_PATH -u OBJC_INCLUDE_PATH \
+  ./scripts/macos/check_quality.sh
+```
+
+If `clang-tidy` cannot find macOS framework headers (for example `Cocoa/Cocoa.h`), set the SDK root explicitly:
+
+```bash
+MACOS_SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/macos/check_quality.sh
+```
+
+Enable local CodeQL scan (optional):
+
+```bash
+ENABLE_CODEQL=1 ./scripts/macos/check_quality.sh
+```
+
+By default, the CodeQL build runs with `BUILD_BINDINGS=OFF` (native backend only) to avoid Shiboken/toolchain coupling.
+If you explicitly want bindings in the CodeQL build, override:
+
+```bash
+ENABLE_CODEQL=1 CODEQL_BUILD_BINDINGS=ON ./scripts/macos/check_quality.sh
+```
+
+Note: with Homebrew CodeQL, query packs may be downloaded on first run (`--download`), so network access is required.
+
+If `codeql` is not installed/in `PATH`, the script reports:
+
+```text
+CodeQL CLI not found in PATH but ENABLE_CODEQL=1 was requested.
+```
+
+Install CodeQL CLI on macOS (Homebrew):
+
+```bash
+brew install codeql
+codeql version
+```
 
 ## Examples
 PySide6 samples in `examples/` demonstrate URL loading, JS injection, and signal handling.
