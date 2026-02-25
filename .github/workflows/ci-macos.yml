@@ -14,19 +14,6 @@ on:
       - "pyproject.toml"
       - ".clang-format"
       - ".github/workflows/ci-macos.yml"
-  push:
-    branches:
-      - main
-    paths:
-      - "src/**"
-      - "bindings/**"
-      - "examples/**"
-      - "scripts/macos/**"
-      - "tests/**"
-      - "CMakeLists.txt"
-      - "pyproject.toml"
-      - ".clang-format"
-      - ".github/workflows/ci-macos.yml"
   workflow_dispatch:
 
 concurrency:
