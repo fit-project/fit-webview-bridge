@@ -103,7 +103,7 @@ for pyv in $PY_VERSIONS; do
     cmake --build "${build_dir}" --parallel
 
   PYTHONPATH="${ROOT_DIR}/${build_dir}:${PYTHONPATH:-}" \
-    python -c "import wkwebview; print('wkwebview import OK (py${pyv})')"
+    python -c "import systemwebview; print('systemwebview import OK (py${pyv})')"
 
   deactivate
   echo

@@ -85,7 +85,7 @@ cmake -S . -B build -G Ninja \
 cmake --build build
 
 # smoke import
-PYTHONPATH="$PWD/build:$PYTHONPATH" python3 -c "import wkwebview; print('wkwebview import OK')"
+PYTHONPATH="$PWD/build:$PYTHONPATH" python3 -c "import systemwebview; print('systemwebview import OK')"
 ```
 
 ## Local checks (same as CI)
@@ -107,7 +107,7 @@ This prepares Python virtualenvs (`3.11`, `3.12`, `3.13`) and installs Qt via `a
 ```
 
 ### 2) Build + smoke import (all supported Python versions)
-This compiles the module for each configured Python version and validates import of `wkwebview`.
+This compiles the module for each configured Python version and validates import of `systemwebview`.
 
 ```bash
 ./scripts/macos/build_smoke_macos.sh

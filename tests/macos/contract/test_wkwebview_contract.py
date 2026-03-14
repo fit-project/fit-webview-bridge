@@ -4,9 +4,9 @@ import pytest
 
 
 @pytest.mark.contract
-def test_module_exports_expected_types(wkwebview_module) -> None:
-    assert getattr(wkwebview_module, "WKWebViewWidget", None) is not None
-    assert getattr(wkwebview_module, "DownloadInfo", None) is not None
+def test_module_exports_expected_types(systemwebview_module) -> None:
+    assert getattr(systemwebview_module, "WKWebViewWidget", None) is not None
+    assert getattr(systemwebview_module, "DownloadInfo", None) is not None
 
 
 @pytest.mark.contract

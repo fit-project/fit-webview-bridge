@@ -136,7 +136,7 @@ set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/shiboken_out)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
 set(HEADERS    "${PROJECT_SOURCE_DIR}/src/macos/WKWebViewWidget.h")
-set(TYPESYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/typesystem_wkwebview.xml")
+set(TYPESYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/typesystem_systemwebview.xml")
 
 message(STATUS "Running shiboken6: output -> ${GEN_DIR}")
 execute_process(
@@ -166,10 +166,10 @@ if (SHIBOKEN_SRCS STREQUAL "")
 endif()
 
 
-add_library(_wkwebview MODULE ${SHIBOKEN_SRCS})
-target_compile_features(_wkwebview PRIVATE cxx_std_17)
+add_library(_systemwebview MODULE ${SHIBOKEN_SRCS})
+target_compile_features(_systemwebview PRIVATE cxx_std_17)
 
-install(TARGETS _wkwebview
+install(TARGETS _systemwebview
   LIBRARY DESTINATION fit_webview_bridge
   RUNTIME DESTINATION fit_webview_bridge
 )
@@ -180,7 +180,7 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-target_include_directories(_wkwebview PRIVATE
+target_include_directories(_systemwebview PRIVATE
   ${GEN_DIR}
   "${PROJECT_SOURCE_DIR}/src/macos"
   ${Python3_INCLUDE_DIRS}
@@ -188,7 +188,7 @@ target_include_directories(_wkwebview PRIVATE
   ${QT_HDRSHIM}
 )
 if(EXISTS "${PYSIDE_INCLUDE_DIR}")
-  target_include_directories(_wkwebview PRIVATE
+  target_include_directories(_systemwebview PRIVATE
     "${PYSIDE_INCLUDE_DIR}"
     "${PYSIDE_INCLUDE_DIR}/QtCore"
     "${PYSIDE_INCLUDE_DIR}/QtGui"
@@ -197,41 +197,41 @@ if(EXISTS "${PYSIDE_INCLUDE_DIR}")
 endif()
 
 
-target_link_directories(_wkwebview PRIVATE "${PYSIDE_QT_LIBDIR}")
+target_link_directories(_systemwebview PRIVATE "${PYSIDE_QT_LIBDIR}")
 
 
-target_link_libraries(_wkwebview PRIVATE
+target_link_libraries(_systemwebview PRIVATE
   "${QTCORE_BIN}"
   "${QTGUI_BIN}"
   "${QTWIDGETS_BIN}"
   "${SHIBOKEN_LIBRARY}"
   "${PYSIDE_LIBRARY}"
   Python3::Module
-  wkwebview
+  systemwebview_macos
 )
 
 get_filename_component(SHIBOKEN_LIB_DIR "${SHIBOKEN_LIBRARY}" DIRECTORY)
 option(FITWVB_VENDORIZE "Vendorize PySide/Qt lookup via @loader_path" ON)
 
-set_target_properties(_wkwebview PROPERTIES
-  PREFIX "" OUTPUT_NAME "wkwebview" SUFFIX "${PY_EXT_SUFFIX}"
+set_target_properties(_systemwebview PROPERTIES
+  PREFIX "" OUTPUT_NAME "systemwebview" SUFFIX "${PY_EXT_SUFFIX}"
   MACOSX_RPATH ON BUILD_WITH_INSTALL_RPATH ON
 )
 
 if(FITWVB_VENDORIZE)
-  set_target_properties(_wkwebview PROPERTIES
+  set_target_properties(_systemwebview PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/fit_webview_bridge"
   )
-  set_property(TARGET _wkwebview APPEND PROPERTY BUILD_RPATH
+  set_property(TARGET _systemwebview APPEND PROPERTY BUILD_RPATH
     "@loader_path" "@loader_path/../PySide6" "@loader_path/../PySide6/Qt/lib" "@loader_path/../shiboken6")
-  set_property(TARGET _wkwebview APPEND PROPERTY INSTALL_RPATH
+  set_property(TARGET _systemwebview APPEND PROPERTY INSTALL_RPATH
     "@loader_path" "@loader_path/../PySide6" "@loader_path/../PySide6/Qt/lib" "@loader_path/../shiboken6")
 else()
-  set_target_properties(_wkwebview PROPERTIES
+  set_target_properties(_systemwebview PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
   )
-  set_property(TARGET _wkwebview APPEND PROPERTY BUILD_RPATH
+  set_property(TARGET _systemwebview APPEND PROPERTY BUILD_RPATH
     "@loader_path" "${PYSIDE_QT_LIBDIR}" "${SHIBOKEN_LIB_DIR}" "${PYSIDE_LIB_DIR}")
-  set_property(TARGET _wkwebview APPEND PROPERTY INSTALL_RPATH
+  set_property(TARGET _systemwebview APPEND PROPERTY INSTALL_RPATH
     "@loader_path" "${PYSIDE_QT_LIBDIR}" "${SHIBOKEN_LIB_DIR}" "${PYSIDE_LIB_DIR}")
 endif()

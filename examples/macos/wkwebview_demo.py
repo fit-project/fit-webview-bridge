@@ -30,14 +30,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# tentativo 1: pacchetto generato da shiboken (wkwebview)
+# tentativo 1: pacchetto generato da shiboken (systemwebview)
 try:
-    import wkwebview
+    import systemwebview
 
-    WKWebViewWidget = wkwebview.WKWebViewWidget
+    WKWebViewWidget = systemwebview.WKWebViewWidget
 except Exception:
     # tentativo 2: modulo nativo diretto
-    from _wkwebview import WKWebViewWidget
+    from _systemwebview import WKWebViewWidget
 
 
 HOME_URL = "https://github.com/fit-project"

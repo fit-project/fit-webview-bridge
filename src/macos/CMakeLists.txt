@@ -25,14 +25,14 @@ file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"    "${QT_HDRSHI
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"     "${QT_HDRSHIM}/QtGui"     SYMBOLIC)
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers" "${QT_HDRSHIM}/QtWidgets" SYMBOLIC)
 
-add_library(wkwebview STATIC
+add_library(systemwebview_macos STATIC
   WKWebViewWidget.mm
   WKWebViewWidget.h
   DownloadInfo.h
 )
-target_compile_features(wkwebview PRIVATE cxx_std_17)
+target_compile_features(systemwebview_macos PRIVATE cxx_std_17)
 
-target_include_directories(wkwebview PUBLIC
+target_include_directories(systemwebview_macos PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"
   "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"
@@ -40,7 +40,7 @@ target_include_directories(wkwebview PUBLIC
   ${QT_HDRSHIM}
 )
 
-target_link_libraries(wkwebview PUBLIC
+target_link_libraries(systemwebview_macos PUBLIC
   "-framework Cocoa"
   "-framework WebKit"
 )
