@@ -31,7 +31,7 @@ fit-webview-bridge/
 └─ tests/                   # Pytest suites
 ```
 
-## API (WKWebViewWidget)
+## API (SystemWebViewWidget)
 **Methods / invokables**
 - `url()`
 - `setUrl(QUrl)`

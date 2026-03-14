@@ -1,1 +1,1 @@
-from .systemwebview import WKWebViewWidget as SystemWebView
+from .systemwebview import SystemWebViewWidget as SystemWebView

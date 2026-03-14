@@ -49,7 +49,7 @@ def systemwebview_module():
 
 @pytest.fixture(scope="session")
 def widget_class(systemwebview_module):
-    cls = getattr(systemwebview_module, "WKWebViewWidget", None)
+    cls = getattr(systemwebview_module, "SystemWebViewWidget", None)
     if cls is None:
-        pytest.skip("WKWebViewWidget class not available in binding")
+        pytest.skip("SystemWebViewWidget class not available in binding")
     return cls

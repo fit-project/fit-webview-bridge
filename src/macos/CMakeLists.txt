@@ -26,8 +26,8 @@ file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"     "${QT_HDRSHI
 file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers" "${QT_HDRSHIM}/QtWidgets" SYMBOLIC)
 
 add_library(systemwebview_macos STATIC
-  WKWebViewWidget.mm
-  WKWebViewWidget.h
+  SystemWebViewWidget.mm
+  SystemWebViewWidget.h
   DownloadInfo.h
 )
 target_compile_features(systemwebview_macos PRIVATE cxx_std_17)

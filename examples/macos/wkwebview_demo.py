@@ -34,10 +34,10 @@ from PySide6.QtWidgets import (
 try:
     import systemwebview
 
-    WKWebViewWidget = systemwebview.WKWebViewWidget
+    SystemWebViewWidget = systemwebview.SystemWebViewWidget
 except Exception:
     # tentativo 2: modulo nativo diretto
-    from _systemwebview import WKWebViewWidget
+    from _systemwebview import SystemWebViewWidget
 
 
 HOME_URL = "https://github.com/fit-project"
@@ -75,7 +75,7 @@ class Main(QMainWindow):
         root.addLayout(bar)
 
         # --- webview ---
-        self.view = WKWebViewWidget()
+        self.view = SystemWebViewWidget()
         root.addWidget(self.view)
 
         # handler screenshot

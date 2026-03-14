@@ -3,7 +3,7 @@
 #import <objc/message.h>
 #import <dispatch/dispatch.h> // <-- AGGIUNGI
 
-#include "WKWebViewWidget.h"
+#include "SystemWebViewWidget.h"
 #include "DownloadInfo.h"
 
 #include <atomic>
@@ -26,21 +26,21 @@ static NSString* fit_nsStringFromUtf8(const QByteArray& bytes) {
     return [NSString stringWithUTF8String:bytes.constData()];
 }
 
-static inline void fit_emit_downloadStarted(WKWebViewWidget* owner, const QString& name, const QString& path) {
+static inline void fit_emit_downloadStarted(SystemWebViewWidget* owner, const QString& name, const QString& path) {
     if (!owner)
         return;
     QMetaObject::invokeMethod(
         owner, [owner, name, path] { emit owner->downloadStarted(name, path); }, Qt::QueuedConnection);
 }
 
-static inline void fit_emit_downloadFailed(WKWebViewWidget* owner, const QString& path, const QString& err) {
+static inline void fit_emit_downloadFailed(SystemWebViewWidget* owner, const QString& path, const QString& err) {
     if (!owner)
         return;
     QMetaObject::invokeMethod(
         owner, [owner, path, err] { emit owner->downloadFailed(path, err); }, Qt::QueuedConnection);
 }
 
-static inline void fit_emit_downloadFinished(WKWebViewWidget* owner, const QString& fileName, const QString& dir,
+static inline void fit_emit_downloadFinished(SystemWebViewWidget* owner, const QString& fileName, const QString& dir,
                                              const QUrl& src) {
     if (!owner)
         return;
@@ -56,7 +56,7 @@ static inline void fit_emit_downloadFinished(WKWebViewWidget* owner, const QStri
 // =======================
 // Impl
 // =======================
-struct WKWebViewWidget::Impl {
+struct SystemWebViewWidget::Impl {
     WKWebView* wk = nil;
     WKNavDelegate* delegate = nil;
     WKUserContentController* ucc = nil;
@@ -78,7 +78,7 @@ static NSURL* toNSURL(QUrl u);
 // SPA message handler
 // =======================
 @interface FitUrlMsgHandler : NSObject <WKScriptMessageHandler>
-@property(nonatomic, assign) WKWebViewWidget* owner;
+@property(nonatomic, assign) SystemWebViewWidget* owner;
 @property(nonatomic, assign) WKWebView* webView;
 
 - (void)_fitShowContextMenuFromPayload:(NSDictionary*)payload;
@@ -403,7 +403,7 @@ static NSString* fit_uniquePath(NSString* baseDir, NSString* filename) {
 
 // ===== WKNavDelegate =====
 @interface WKNavDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate>
-@property(nonatomic, assign) WKWebViewWidget* owner;
+@property(nonatomic, assign) SystemWebViewWidget* owner;
 // mappe per download
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSString*>* downloadPaths;        // weak key -> strong value
 @property(nonatomic, strong) NSHashTable<WKDownload*>* activeDownloads;                // weak set
@@ -890,9 +890,9 @@ static NSURL* toNSURL(QUrl u) {
 }
 
 // =======================
-// WKWebViewWidget
+// SystemWebViewWidget
 // =======================
-WKWebViewWidget::WKWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
+SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
     setAttribute(Qt::WA_NativeWindow, true);
     (void)winId();
 
@@ -1014,7 +1014,7 @@ WKWebViewWidget::WKWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl)
     applyUserAgent();
 }
 
-WKWebViewWidget::~WKWebViewWidget() {
+SystemWebViewWidget::~SystemWebViewWidget() {
     if (!d)
         return;
 
@@ -1046,14 +1046,14 @@ WKWebViewWidget::~WKWebViewWidget() {
     d = nullptr;
 }
 
-void WKWebViewWidget::showEvent(QShowEvent* e) {
+void SystemWebViewWidget::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
 }
-void WKWebViewWidget::resizeEvent(QResizeEvent* e) {
+void SystemWebViewWidget::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
 }
 
-void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
+void SystemWebViewWidget::focusInEvent(QFocusEvent* e) {
     QWidget::focusInEvent(e);
     if (d && d->wk) {
         if (d->wk.window) {
@@ -1064,7 +1064,7 @@ void WKWebViewWidget::focusInEvent(QFocusEvent* e) {
     }
 }
 
-void WKWebViewWidget::mousePressEvent(QMouseEvent* e) {
+void SystemWebViewWidget::mousePressEvent(QMouseEvent* e) {
     // Ensure Qt focus follows native focus, so shortcuts don't stay on other widgets.
     if (auto* w = window()) {
         if (QWidget* fw = w->focusWidget(); fw && fw != this) {
@@ -1078,7 +1078,7 @@ void WKWebViewWidget::mousePressEvent(QMouseEvent* e) {
     QWidget::mousePressEvent(e);
 }
 
-void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
+void SystemWebViewWidget::keyPressEvent(QKeyEvent* e) {
     if (d && d->wk) {
         auto sendAction = [&](SEL sel) {
             if (d->wk.window) {
@@ -1110,7 +1110,7 @@ void WKWebViewWidget::keyPressEvent(QKeyEvent* e) {
     QWidget::keyPressEvent(e);
 }
 
-QUrl WKWebViewWidget::url() const {
+QUrl SystemWebViewWidget::url() const {
     if (!(d && d->wk))
         return QUrl();
     NSURL* nsurl = d->wk.URL;
@@ -1122,7 +1122,7 @@ QUrl WKWebViewWidget::url() const {
     return QUrl::fromEncoded(QByteArray(utf8));
 }
 
-void WKWebViewWidget::setUrl(const QUrl& u) {
+void SystemWebViewWidget::setUrl(const QUrl& u) {
     if (!(d && d->wk))
         return;
     NSURL* nsurl = toNSURL(u);
@@ -1135,19 +1135,19 @@ void WKWebViewWidget::setUrl(const QUrl& u) {
     [d->wk loadRequest:req];
 }
 
-void WKWebViewWidget::back() {
+void SystemWebViewWidget::back() {
     if (d && d->wk && d->wk.canGoBack)
         [d->wk goBack];
 }
-void WKWebViewWidget::forward() {
+void SystemWebViewWidget::forward() {
     if (d && d->wk && d->wk.canGoForward)
         [d->wk goForward];
 }
-void WKWebViewWidget::stop() {
+void SystemWebViewWidget::stop() {
     if (d && d->wk)
         [d->wk stopLoading:nil];
 }
-void WKWebViewWidget::reload() {
+void SystemWebViewWidget::reload() {
     if (!(d && d->wk))
         return;
     if ([d->wk respondsToSelector:@selector(reloadFromOrigin)]) {
@@ -1157,7 +1157,7 @@ void WKWebViewWidget::reload() {
     }
 }
 
-void WKWebViewWidget::clearWebsiteData() {
+void SystemWebViewWidget::clearWebsiteData() {
     if (!(d && d->wk))
         return;
 
@@ -1179,7 +1179,7 @@ void WKWebViewWidget::clearWebsiteData() {
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] removeCookiesSinceDate:since];
 }
 
-void WKWebViewWidget::evaluateJavaScript(const QString& script) {
+void SystemWebViewWidget::evaluateJavaScript(const QString& script) {
     if (!d || !d->wk)
         return;
     NSString* s = fit_nsStringFromUtf8(script.toUtf8());
@@ -1192,7 +1192,7 @@ void WKWebViewWidget::evaluateJavaScript(const QString& script) {
             }];
 }
 
-quint64 WKWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
+quint64 SystemWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
     if (!d || !d->wk)
         return 0;
     const quint64 token = ++s_jsToken;
@@ -1202,12 +1202,12 @@ quint64 WKWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
         return 0;
 
     // ✅ usa QPointer invece di __weak
-    QPointer<WKWebViewWidget> guard(this);
+    QPointer<SystemWebViewWidget> guard(this);
 
     [d->wk
         evaluateJavaScript:s
          completionHandler:^(id result, NSError* error) {
-           WKWebViewWidget* self = guard.data();
+           SystemWebViewWidget* self = guard.data();
            if (!self)
                return; // l'oggetto Qt è stato distrutto: esci in sicurezza
 
@@ -1238,11 +1238,11 @@ quint64 WKWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
 // =======================
 // Download directory API
 // =======================
-QString WKWebViewWidget::downloadDirectory() const {
+QString SystemWebViewWidget::downloadDirectory() const {
     return d ? d->downloadDir : QString();
 }
 
-void WKWebViewWidget::setDownloadDirectory(const QString& dirPath) {
+void SystemWebViewWidget::setDownloadDirectory(const QString& dirPath) {
     if (!d)
         return;
     QString p = QDir::fromNativeSeparators(dirPath);
@@ -1254,7 +1254,7 @@ void WKWebViewWidget::setDownloadDirectory(const QString& dirPath) {
     d->downloadDir = p;
 }
 
-void WKWebViewWidget::renderErrorPage(const QUrl& url, const QString& reason, int httpStatus) {
+void SystemWebViewWidget::renderErrorPage(const QUrl& url, const QString& reason, int httpStatus) {
     if (!(d && d->wk))
         return;
 
@@ -1333,7 +1333,7 @@ void WKWebViewWidget::renderErrorPage(const QUrl& url, const QString& reason, in
 }
 
 // --- NEW: metodo privato
-void WKWebViewWidget::applyUserAgent() {
+void SystemWebViewWidget::applyUserAgent() {
     if (!(d && d->wk))
         return;
     @autoreleasepool {
@@ -1380,36 +1380,36 @@ void WKWebViewWidget::applyUserAgent() {
 }
 
 // --- API pubblica UA
-void WKWebViewWidget::setUserAgent(const QString& ua) {
+void SystemWebViewWidget::setUserAgent(const QString& ua) {
     if (!d)
         return;
     d->customUA = ua.trimmed();
     applyUserAgent();
 }
 
-QString WKWebViewWidget::userAgent() const {
+QString SystemWebViewWidget::userAgent() const {
     return d ? d->customUA : QString();
 }
 
-void WKWebViewWidget::resetUserAgent() {
+void SystemWebViewWidget::resetUserAgent() {
     if (!d)
         return;
     d->customUA.clear();
     applyUserAgent();
 }
 
-void WKWebViewWidget::setApplicationNameForUserAgent(const QString& appName) {
+void SystemWebViewWidget::setApplicationNameForUserAgent(const QString& appName) {
     if (!d)
         return;
     d->appUA = appName.trimmed();
     applyUserAgent();
 }
 
-quint64 WKWebViewWidget::captureVisiblePage(const QString& filePath) {
+quint64 SystemWebViewWidget::captureVisiblePage(const QString& filePath) {
     return ensureOnGuiThread(this, [this, filePath](quint64 token) { _captureVisiblePage_onGui(filePath, token); });
 }
 
-quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quint64 token) {
+quint64 SystemWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quint64 token) {
     if (!(d && d->wk)) {
         emit captureFinished(token, false, filePath, QStringLiteral("WebView not ready"));
         return token;
@@ -1426,11 +1426,11 @@ quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quin
         QDir().mkpath(fi.dir().path());
 
     // Guard per vita dell’oggetto
-    QPointer<WKWebViewWidget> guard(this);
+    QPointer<SystemWebViewWidget> guard(this);
 
     // Micro-delay per stabilizzare layout
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-      WKWebViewWidget* self = guard.data();
+      SystemWebViewWidget* self = guard.data();
       if (!self || !(self->d && self->d->wk))
           return;
 
@@ -1441,7 +1441,7 @@ quint64 WKWebViewWidget::_captureVisiblePage_onGui(const QString& filePath, quin
       [self->d->wk
           takeSnapshotWithConfiguration:cfg
                       completionHandler:^(NSImage* snapshotImage, NSError* error) {
-                        WKWebViewWidget* self2 = guard.data();
+                        SystemWebViewWidget* self2 = guard.data();
                         if (!self2 || !(self2->d && self2->d->wk))
                             return;
 

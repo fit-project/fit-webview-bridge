@@ -135,7 +135,7 @@ message(STATUS "Shiboken include paths:\n  ${SHIBOKEN_INCLUDE_ARG}")
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/shiboken_out)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
-set(HEADERS    "${PROJECT_SOURCE_DIR}/src/macos/WKWebViewWidget.h")
+set(HEADERS    "${PROJECT_SOURCE_DIR}/src/macos/SystemWebViewWidget.h")
 set(TYPESYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/typesystem_systemwebview.xml")
 
 message(STATUS "Running shiboken6: output -> ${GEN_DIR}")

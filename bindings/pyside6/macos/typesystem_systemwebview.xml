@@ -4,8 +4,8 @@
   <load-typesystem name="typesystem_gui.xml"     generate="no"/>
   <load-typesystem name="typesystem_widgets.xml" generate="no"/>
 
-  <object-type name="WKWebViewWidget">
-    <include file-name="WKWebViewWidget.h" location="global"/>
+  <object-type name="SystemWebViewWidget">
+    <include file-name="SystemWebViewWidget.h" location="global"/>
   </object-type>
   <object-type name="DownloadInfo">
     <include file-name="DownloadInfo.h" location="global"/>

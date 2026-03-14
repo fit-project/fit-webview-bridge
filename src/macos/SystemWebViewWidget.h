@@ -12,13 +12,13 @@ class QFocusEvent;
 class QMouseEvent;
 class QKeyEvent;
 
-class WKWebViewWidget : public QWidget {
+class SystemWebViewWidget : public QWidget {
     Q_OBJECT
     Q_PROPERTY(QUrl url READ url WRITE setUrl NOTIFY urlChanged)
 
   public:
-    explicit WKWebViewWidget(QWidget* parent = nullptr);
-    ~WKWebViewWidget() override;
+    explicit SystemWebViewWidget(QWidget* parent = nullptr);
+    ~SystemWebViewWidget() override;
 
     Q_INVOKABLE QUrl url() const;
     Q_INVOKABLE void setUrl(const QUrl& url);

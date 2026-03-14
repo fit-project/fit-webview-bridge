@@ -5,7 +5,7 @@ import pytest
 
 @pytest.mark.contract
 def test_module_exports_expected_types(systemwebview_module) -> None:
-    assert getattr(systemwebview_module, "WKWebViewWidget", None) is not None
+    assert getattr(systemwebview_module, "SystemWebViewWidget", None) is not None
     assert getattr(systemwebview_module, "DownloadInfo", None) is not None
 
 

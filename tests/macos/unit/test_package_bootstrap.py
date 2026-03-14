@@ -15,8 +15,8 @@ def test_package_init_exports_systemwebview_entrypoint() -> None:
         sys.modules.pop(mod_name, None)
 
     fake_mod = types.ModuleType(module_name)
-    fake_widget = type("FakeWKWebViewWidget", (), {})
-    fake_mod.WKWebViewWidget = fake_widget
+    fake_widget = type("FakeSystemWebViewWidget", (), {})
+    fake_mod.SystemWebViewWidget = fake_widget
 
     sys.modules[module_name] = fake_mod
 
