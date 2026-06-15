@@ -137,12 +137,21 @@ file(MAKE_DIRECTORY ${GEN_DIR})
 
 set(HEADERS    "${PROJECT_SOURCE_DIR}/src/macos/SystemWebViewWidget.h")
 set(TYPESYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/typesystem_systemwebview.xml")
+set(FITWVB_MACOS_TOOLCHAIN_COMPAT "${PROJECT_SOURCE_DIR}/cmake/macos_toolchain_compat.h")
+
+set(SHIBOKEN_CLANG_OPTIONS)
+if(APPLE AND EXISTS "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
+  list(APPEND SHIBOKEN_CLANG_OPTIONS
+    --clang-options=-include,${FITWVB_MACOS_TOOLCHAIN_COMPAT}
+  )
+endif()
 
 message(STATUS "Running shiboken6: output -> ${GEN_DIR}")
 execute_process(
   COMMAND "${SHIBOKEN6_GEN}"
           --generator-set=shiboken
           --enable-pyside-extensions
+          ${SHIBOKEN_CLANG_OPTIONS}
           --include-paths=${SHIBOKEN_INCLUDE_ARG}
           --typesystem-paths=${SHIBOKEN_TYPESYS}
           --typesystem-paths=${PYSIDE_TYPESYS}
@@ -168,6 +177,9 @@ endif()
 
 add_library(_systemwebview MODULE ${SHIBOKEN_SRCS})
 target_compile_features(_systemwebview PRIVATE cxx_std_17)
+if(APPLE AND EXISTS "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
+  target_compile_options(_systemwebview PRIVATE -include "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
+endif()
 
 install(TARGETS _systemwebview
   LIBRARY DESTINATION fit_webview_bridge

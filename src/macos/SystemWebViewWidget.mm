@@ -1179,6 +1179,29 @@ void SystemWebViewWidget::clearWebsiteData() {
     [[NSHTTPCookieStorage sharedHTTPCookieStorage] removeCookiesSinceDate:since];
 }
 
+void SystemWebViewWidget::clearCacheData() {
+    if (!(d && d->wk))
+        return;
+
+    WKWebsiteDataStore* store = nil;
+    if ([d->wk.configuration respondsToSelector:@selector(websiteDataStore)]) {
+        store = d->wk.configuration.websiteDataStore;
+    }
+    if (!store)
+        return;
+
+    NSMutableSet<NSString*>* dataTypes = [NSMutableSet set];
+    [dataTypes addObject:WKWebsiteDataTypeDiskCache];
+    [dataTypes addObject:WKWebsiteDataTypeMemoryCache];
+
+    NSDate* since = [NSDate dateWithTimeIntervalSince1970:0];
+    [store removeDataOfTypes:dataTypes
+               modifiedSince:since
+           completionHandler:^{
+           }];
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+}
+
 void SystemWebViewWidget::evaluateJavaScript(const QString& script) {
     if (!d || !d->wk)
         return;

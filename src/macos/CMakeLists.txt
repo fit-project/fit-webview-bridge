@@ -32,6 +32,11 @@ add_library(systemwebview_macos STATIC
 )
 target_compile_features(systemwebview_macos PRIVATE cxx_std_17)
 
+set(FITWVB_MACOS_TOOLCHAIN_COMPAT "${PROJECT_SOURCE_DIR}/cmake/macos_toolchain_compat.h")
+if(APPLE AND EXISTS "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
+  target_compile_options(systemwebview_macos PRIVATE -include "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
+endif()
+
 target_include_directories(systemwebview_macos PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"

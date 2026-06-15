@@ -19,6 +19,7 @@ def test_widget_declares_expected_public_methods(widget_class) -> None:
         "stop",
         "reload",
         "clearWebsiteData",
+        "clearCacheData",
         "evaluateJavaScript",
         "evaluateJavaScriptWithResult",
         "setDownloadDirectory",

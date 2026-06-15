@@ -40,6 +40,7 @@ fit-webview-bridge/
 - `stop()`
 - `reload()`
 - `clearWebsiteData()`
+- `clearCacheData()`
 - `evaluateJavaScript(QString)`
 - `evaluateJavaScriptWithResult(QString) -> token`
 - `setDownloadDirectory(QString)`

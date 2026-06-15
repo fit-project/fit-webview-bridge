@@ -28,6 +28,7 @@ class SystemWebViewWidget : public QWidget {
     Q_INVOKABLE void stop();
     Q_INVOKABLE void reload();
     Q_INVOKABLE void clearWebsiteData();
+    Q_INVOKABLE void clearCacheData();
     Q_INVOKABLE void evaluateJavaScript(const QString& script);
     Q_INVOKABLE quint64 evaluateJavaScriptWithResult(const QString& script);
 
