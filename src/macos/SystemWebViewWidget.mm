@@ -1,7 +1,19 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#if __has_include(<Network/Network.h>)
+#import <Network/Network.h>
+#define FITWVB_HAS_NETWORK_FRAMEWORK 1
+#else
+#define FITWVB_HAS_NETWORK_FRAMEWORK 0
+#endif
 #import <objc/message.h>
 #import <dispatch/dispatch.h> // <-- AGGIUNGI
+
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 140000 && FITWVB_HAS_NETWORK_FRAMEWORK
+#define FITWVB_HAS_MACOS14_PROXY_API 1
+#else
+#define FITWVB_HAS_MACOS14_PROXY_API 0
+#endif
 
 #include "SystemWebViewWidget.h"
 #include "DownloadInfo.h"
@@ -73,6 +85,8 @@ struct SystemWebViewWidget::Impl {
 // Helpers forward
 // =======================
 static NSURL* toNSURL(QUrl u);
+static WKWebsiteDataStore* fit_websiteDataStore(WKWebView* webView);
+static bool fit_hasExplicitProxySupport(WKWebsiteDataStore* store);
 
 // =======================
 // SPA message handler
@@ -889,6 +903,23 @@ static NSURL* toNSURL(QUrl u) {
     return [NSURL URLWithString:encodedUrl];
 }
 
+static WKWebsiteDataStore* fit_websiteDataStore(WKWebView* webView) {
+    if (!webView || ![webView.configuration respondsToSelector:@selector(websiteDataStore)])
+        return nil;
+    return webView.configuration.websiteDataStore;
+}
+
+static bool fit_hasExplicitProxySupport(WKWebsiteDataStore* store) {
+    if (!store)
+        return false;
+#if FITWVB_HAS_MACOS14_PROXY_API
+    if (@available(macOS 14.0, *)) {
+        return [store respondsToSelector:NSSelectorFromString(@"setProxyConfigurations:")];
+    }
+#endif
+    return false;
+}
+
 // =======================
 // SystemWebViewWidget
 // =======================
@@ -1200,6 +1231,59 @@ void SystemWebViewWidget::clearCacheData() {
            completionHandler:^{
            }];
     [[NSURLCache sharedURLCache] removeAllCachedResponses];
+}
+
+bool SystemWebViewWidget::setProxy(const QString& host, int port) {
+    const QString trimmedHost = host.trimmed();
+    if (trimmedHost.isEmpty() || port < 1 || port > 65535)
+        return false;
+
+    WKWebsiteDataStore* store = (d && d->wk) ? fit_websiteDataStore(d->wk) : nil;
+    if (!fit_hasExplicitProxySupport(store))
+        return false;
+
+#if FITWVB_HAS_MACOS14_PROXY_API
+    if (@available(macOS 14.0, *)) {
+        const QByteArray hostBytes = trimmedHost.toUtf8();
+        const QByteArray portBytes = QByteArray::number(port);
+
+        nw_endpoint_t endpoint = nw_endpoint_create_host(hostBytes.constData(), portBytes.constData());
+        if (!endpoint)
+            return false;
+
+        nw_proxy_config_t proxy = nw_proxy_config_create_http_connect(endpoint, nil);
+        if (!proxy) {
+            nw_release(endpoint);
+            return false;
+        }
+
+        nw_proxy_config_set_failover_allowed(proxy, false);
+        NSArray* configs = [NSArray arrayWithObject:(id)proxy];
+        ((void (*)(id, SEL, id))objc_msgSend)(store, NSSelectorFromString(@"setProxyConfigurations:"), configs);
+
+        nw_release(proxy);
+        nw_release(endpoint);
+        return true;
+    }
+#endif
+    return false;
+}
+
+void SystemWebViewWidget::clearProxy() {
+    WKWebsiteDataStore* store = (d && d->wk) ? fit_websiteDataStore(d->wk) : nil;
+    if (!fit_hasExplicitProxySupport(store))
+        return;
+
+#if FITWVB_HAS_MACOS14_PROXY_API
+    if (@available(macOS 14.0, *)) {
+        ((void (*)(id, SEL, id))objc_msgSend)(store, NSSelectorFromString(@"setProxyConfigurations:"), nil);
+    }
+#endif
+}
+
+bool SystemWebViewWidget::hasExplicitProxySupport() const {
+    WKWebsiteDataStore* store = (d && d->wk) ? fit_websiteDataStore(d->wk) : nil;
+    return fit_hasExplicitProxySupport(store);
 }
 
 void SystemWebViewWidget::evaluateJavaScript(const QString& script) {

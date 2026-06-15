@@ -48,4 +48,5 @@ target_include_directories(systemwebview_macos PUBLIC
 target_link_libraries(systemwebview_macos PUBLIC
   "-framework Cocoa"
   "-framework WebKit"
+  "-framework Network"
 )

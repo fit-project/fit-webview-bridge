@@ -41,6 +41,9 @@ fit-webview-bridge/
 - `reload()`
 - `clearWebsiteData()`
 - `clearCacheData()`
+- `setProxy(QString host, int port) -> bool` (macOS 14+ WKWebView explicit HTTP CONNECT proxy)
+- `clearProxy()`
+- `hasExplicitProxySupport() -> bool`
 - `evaluateJavaScript(QString)`
 - `evaluateJavaScriptWithResult(QString) -> token`
 - `setDownloadDirectory(QString)`
@@ -50,6 +53,10 @@ fit-webview-bridge/
 - `resetUserAgent()`
 - `setApplicationNameForUserAgent(QString)`
 - `captureVisiblePage(QString) -> token`
+
+`setProxy()` uses `WKWebsiteDataStore.proxyConfigurations` on macOS 14+ and should be called immediately after
+creating `SystemWebViewWidget`, before the first `setUrl()`. `clearProxy()` only removes the explicit proxy
+configuration; it does not clear cookies, storage, or cache.
 
 **Signals**
 - `urlChanged(QUrl)`
