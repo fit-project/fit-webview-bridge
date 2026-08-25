@@ -15,8 +15,8 @@
 #define FITWVB_HAS_MACOS14_PROXY_API 0
 #endif
 
-#include "SystemWebViewWidget.h"
-#include "DownloadInfo.h"
+#include "fit_webview_bridge/SystemWebViewWidget.h"
+#include "fit_webview_bridge/DownloadInfo.h"
 
 #include <atomic>
 

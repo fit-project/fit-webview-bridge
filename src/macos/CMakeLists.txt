@@ -27,8 +27,8 @@ file(CREATE_LINK "${QT_FRAMEWORKS_DIR}/QtWidgets.framework/Headers" "${QT_HDRSHI
 
 add_library(systemwebview_macos STATIC
   SystemWebViewWidget.mm
-  SystemWebViewWidget.h
-  DownloadInfo.h
+  "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/SystemWebViewWidget.h"
+  "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/DownloadInfo.h"
 )
 target_compile_features(systemwebview_macos PRIVATE cxx_std_17)
 
@@ -38,6 +38,7 @@ if(APPLE AND EXISTS "${FITWVB_MACOS_TOOLCHAIN_COMPAT}")
 endif()
 
 target_include_directories(systemwebview_macos PUBLIC
+  "${PROJECT_SOURCE_DIR}/include"
   ${CMAKE_CURRENT_SOURCE_DIR}
   "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"
   "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"

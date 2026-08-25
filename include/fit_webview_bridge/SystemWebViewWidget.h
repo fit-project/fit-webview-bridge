@@ -3,7 +3,7 @@
 #include <QObject>
 #include <QUrl>
 
-#include "DownloadInfo.h"
+#include "fit_webview_bridge/DownloadInfo.h"
 
 class QString;
 class QShowEvent;
