@@ -114,7 +114,7 @@ get_filename_component(PYSIDE_LIB_DIR "${PYSIDE_LIBRARY}" DIRECTORY)
 
 set(SHIBOKEN_INCLUDE_LIST
   "${QT_HDRSHIM}"                   
-  "${PROJECT_SOURCE_DIR}/src/macos"       
+  "${PROJECT_SOURCE_DIR}/include"
   "${SHIBOKEN_INCLUDE_DIR}"             
   "${QT_FRAMEWORKS_DIR}/QtCore.framework/Headers"
   "${QT_FRAMEWORKS_DIR}/QtGui.framework/Headers"
@@ -135,8 +135,8 @@ message(STATUS "Shiboken include paths:\n  ${SHIBOKEN_INCLUDE_ARG}")
 set(GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/shiboken_out)
 file(MAKE_DIRECTORY ${GEN_DIR})
 
-set(HEADERS    "${PROJECT_SOURCE_DIR}/src/macos/SystemWebViewWidget.h")
-set(TYPESYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/typesystem_systemwebview.xml")
+set(HEADERS    "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/SystemWebViewWidget.h")
+set(TYPESYSTEM "${PROJECT_SOURCE_DIR}/bindings/pyside6/typesystem_systemwebview.xml")
 set(FITWVB_MACOS_TOOLCHAIN_COMPAT "${PROJECT_SOURCE_DIR}/cmake/macos_toolchain_compat.h")
 
 set(SHIBOKEN_CLANG_OPTIONS)
@@ -194,7 +194,7 @@ execute_process(
 
 target_include_directories(_systemwebview PRIVATE
   ${GEN_DIR}
-  "${PROJECT_SOURCE_DIR}/src/macos"
+  "${PROJECT_SOURCE_DIR}/include"
   ${Python3_INCLUDE_DIRS}
   ${SHIBOKEN_INCLUDE_DIR}
   ${QT_HDRSHIM}
