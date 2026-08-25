@@ -71,3 +71,21 @@ QT_QPA_PLATFORM=xcb \
 ```
 
 `Could NOT find WrapVulkanHeaders` is a non-fatal Qt diagnostic for this build.
+
+## Linux API notes
+
+JavaScript evaluation uses JavaScriptCoreGTK and maps null/undefined, boolean,
+number, and string results to their QVariant equivalents. Structured object and
+array serialization is intentionally not part of the current milestone.
+
+As on macOS, `userAgent()` returns the configured full override, or an empty
+string when no override is active; it does not return WebKit's effective
+default value. `setApplicationNameForUserAgent()` uses WebKitGTK's native
+application-details API. WebKitGTK appends both the supplied name and its
+default engine version, whereas WKWebView controls the application-name suffix
+through its configuration object.
+
+`clearWebsiteData()` requests removal of every data type supported by the
+installed WebKitGTK, including caches, storage, databases, cookies, HSTS/ITP,
+service-worker registrations, and DOM cache data. `clearCacheData()` is limited
+to WebKitGTK's memory and disk cache types. Both operations are asynchronous.

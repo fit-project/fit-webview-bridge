@@ -4,14 +4,19 @@
 #include <QDebug>
 #include <QFocusEvent>
 #include <QKeyEvent>
-#include <QtMath>
+#include <QMetaObject>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWindow>
+#include <QtMath>
+
+#include <atomic>
+#include <memory>
 
 // GLib/GTK headers contain structure members named "signals", which conflicts
 // with Qt's keyword compatibility macro after the Qt headers are parsed.
@@ -25,6 +30,13 @@
 namespace {
 
 constexpr auto unsupportedMessage = "Not implemented by the Linux WebKitGTK proof of concept";
+std::atomic<quint64> jsToken{0};
+
+struct JavaScriptRequest {
+    QPointer<SystemWebViewWidget> owner;
+    quint64 token = 0;
+    bool emitResult = false;
+};
 
 void warnUnsupported(const char* method) {
     qWarning().nospace() << "SystemWebViewWidget::" << method << ": " << unsupportedMessage;
@@ -65,6 +77,65 @@ bool initializeGtkX11() {
     return initialized;
 }
 
+QVariant variantFromJscValue(JSCValue* value) {
+    if (value == nullptr || jsc_value_is_null(value) || jsc_value_is_undefined(value)) {
+        return {};
+    }
+    if (jsc_value_is_boolean(value)) {
+        return QVariant::fromValue(static_cast<bool>(jsc_value_to_boolean(value)));
+    }
+    if (jsc_value_is_number(value)) {
+        return QVariant::fromValue(jsc_value_to_double(value));
+    }
+    if (jsc_value_is_string(value)) {
+        char* text = jsc_value_to_string(value);
+        const QString result = text != nullptr ? QString::fromUtf8(text) : QString();
+        g_free(text);
+        return result;
+    }
+    return {};
+}
+
+void javascriptFinished(GObject* source, GAsyncResult* result, gpointer userData) {
+    std::unique_ptr<JavaScriptRequest> request(static_cast<JavaScriptRequest*>(userData));
+    GError* error = nullptr;
+    JSCValue* value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
+    const QVariant output = variantFromJscValue(value);
+    const QString errorText = error != nullptr ? QString::fromUtf8(error->message) : QString();
+
+    if (value != nullptr) {
+        g_object_unref(value);
+    }
+    if (error != nullptr) {
+        g_error_free(error);
+    }
+
+    if (!request->emitResult || request->owner.isNull()) {
+        return;
+    }
+    const QPointer<SystemWebViewWidget> owner = request->owner;
+    const quint64 token = request->token;
+    QMetaObject::invokeMethod(
+        owner.data(),
+        [owner, output, token, errorText] {
+            if (!owner.isNull()) {
+                emit owner->javaScriptResult(output, token, errorText);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+void websiteDataCleared(GObject* source, GAsyncResult* result, gpointer) {
+    GError* error = nullptr;
+    if (!webkit_website_data_manager_clear_finish(WEBKIT_WEBSITE_DATA_MANAGER(source), result, &error)) {
+        qWarning() << "Failed to clear WebKitGTK website data:"
+                   << (error != nullptr ? QString::fromUtf8(error->message) : QStringLiteral("unknown error"));
+    }
+    if (error != nullptr) {
+        g_error_free(error);
+    }
+}
+
 } // namespace
 
 struct SystemWebViewWidget::Impl {
@@ -81,6 +152,8 @@ struct SystemWebViewWidget::Impl {
     bool canGoBack = false;
     bool canGoForward = false;
     bool available = false;
+    QString customUserAgent;
+    QString applicationNameForUserAgent;
 
     WebKitWebView* nativeWebView() const { return WEBKIT_WEB_VIEW(webView); }
 
@@ -318,25 +391,70 @@ void SystemWebViewWidget::reload() {
         webkit_web_view_reload(d->nativeWebView());
     }
 }
-void SystemWebViewWidget::clearWebsiteData() { warnUnsupported("clearWebsiteData()"); }
-void SystemWebViewWidget::clearCacheData() { warnUnsupported("clearCacheData()"); }
+void SystemWebViewWidget::clearWebsiteData() {
+    if (!d->available) {
+        return;
+    }
+    webkit_website_data_manager_clear(
+        webkit_web_view_get_website_data_manager(d->nativeWebView()),
+        WEBKIT_WEBSITE_DATA_ALL,
+        0,
+        nullptr,
+        websiteDataCleared,
+        nullptr);
+}
+void SystemWebViewWidget::clearCacheData() {
+    if (!d->available) {
+        return;
+    }
+    const auto cacheTypes = static_cast<WebKitWebsiteDataTypes>(
+        WEBKIT_WEBSITE_DATA_MEMORY_CACHE | WEBKIT_WEBSITE_DATA_DISK_CACHE);
+    webkit_website_data_manager_clear(
+        webkit_web_view_get_website_data_manager(d->nativeWebView()),
+        cacheTypes,
+        0,
+        nullptr,
+        websiteDataCleared,
+        nullptr);
+}
 bool SystemWebViewWidget::setProxy(const QString&, int) { warnUnsupported("setProxy()"); return false; }
 void SystemWebViewWidget::clearProxy() { warnUnsupported("clearProxy()"); }
 bool SystemWebViewWidget::hasExplicitProxySupport() const { return false; }
-void SystemWebViewWidget::evaluateJavaScript(const QString&) { warnUnsupported("evaluateJavaScript()"); }
-quint64 SystemWebViewWidget::evaluateJavaScriptWithResult(const QString&) {
-    warnUnsupported("evaluateJavaScriptWithResult()");
-    emit javaScriptResult(QVariant(), 0, QString::fromLatin1(unsupportedMessage));
-    return 0;
+void SystemWebViewWidget::evaluateJavaScript(const QString& script) {
+    if (!d->available) {
+        return;
+    }
+    const QByteArray utf8 = script.toUtf8();
+    auto* request = new JavaScriptRequest{QPointer<SystemWebViewWidget>(this), 0, false};
+    webkit_web_view_evaluate_javascript(
+        d->nativeWebView(), utf8.constData(), utf8.size(), nullptr, nullptr, nullptr, javascriptFinished, request);
+}
+quint64 SystemWebViewWidget::evaluateJavaScriptWithResult(const QString& script) {
+    if (!d->available) {
+        return 0;
+    }
+    const quint64 token = ++jsToken;
+    const QByteArray utf8 = script.toUtf8();
+    auto* request = new JavaScriptRequest{QPointer<SystemWebViewWidget>(this), token, true};
+    webkit_web_view_evaluate_javascript(
+        d->nativeWebView(), utf8.constData(), utf8.size(), nullptr, nullptr, nullptr, javascriptFinished, request);
+    return token;
 }
 void SystemWebViewWidget::setDownloadDirectory(const QString&) { warnUnsupported("setDownloadDirectory()"); }
 QString SystemWebViewWidget::downloadDirectory() const { return {}; }
 void SystemWebViewWidget::renderErrorPage(const QUrl&, const QString&, int) { warnUnsupported("renderErrorPage()"); }
-void SystemWebViewWidget::setUserAgent(const QString&) { warnUnsupported("setUserAgent()"); }
-QString SystemWebViewWidget::userAgent() const { return {}; }
-void SystemWebViewWidget::resetUserAgent() { warnUnsupported("resetUserAgent()"); }
-void SystemWebViewWidget::setApplicationNameForUserAgent(const QString&) {
-    warnUnsupported("setApplicationNameForUserAgent()");
+void SystemWebViewWidget::setUserAgent(const QString& userAgent) {
+    d->customUserAgent = userAgent.trimmed();
+    applyUserAgent();
+}
+QString SystemWebViewWidget::userAgent() const { return d->customUserAgent; }
+void SystemWebViewWidget::resetUserAgent() {
+    d->customUserAgent.clear();
+    applyUserAgent();
+}
+void SystemWebViewWidget::setApplicationNameForUserAgent(const QString& name) {
+    d->applicationNameForUserAgent = name.trimmed();
+    applyUserAgent();
 }
 quint64 SystemWebViewWidget::captureVisiblePage(const QString& filePath) {
     warnUnsupported("captureVisiblePage()");
@@ -344,4 +462,18 @@ quint64 SystemWebViewWidget::captureVisiblePage(const QString& filePath) {
     return 0;
 }
 quint64 SystemWebViewWidget::_captureVisiblePage_onGui(const QString&, quint64) { return 0; }
-void SystemWebViewWidget::applyUserAgent() {}
+void SystemWebViewWidget::applyUserAgent() {
+    if (!d->available) {
+        return;
+    }
+    WebKitSettings* settings = webkit_web_view_get_settings(d->nativeWebView());
+    if (!d->customUserAgent.isEmpty()) {
+        const QByteArray custom = d->customUserAgent.toUtf8();
+        webkit_settings_set_user_agent(settings, custom.constData());
+        return;
+    }
+
+    const QByteArray applicationName = d->applicationNameForUserAgent.toUtf8();
+    webkit_settings_set_user_agent_with_application_details(
+        settings, applicationName.isEmpty() ? nullptr : applicationName.constData(), nullptr);
+}

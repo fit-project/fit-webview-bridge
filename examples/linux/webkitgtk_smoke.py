@@ -52,6 +52,12 @@ def main() -> int:
         "back_states": [],
         "forward_states": [],
         "stop_cancelled_load": False,
+        "javascript": {},
+        "javascript_tokens": [],
+        "unexpected_javascript_tokens": [],
+        "default_user_agent": "",
+        "custom_user_agent_property": False,
+        "data_clear_invoked": False,
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -105,10 +111,77 @@ def main() -> int:
             "load failure": False in observed["finished"],
             "back state": True in observed["back_states"],
             "forward state": True in observed["forward_states"],
+            "JavaScript number": observed["javascript"].get("number", (None, "")) == (42.0, ""),
+            "JavaScript string": observed["javascript"].get("string", (None, "")) == ("linux-js", ""),
+            "JavaScript boolean": observed["javascript"].get("boolean", (None, "")) == (True, ""),
+            "JavaScript null": observed["javascript"].get("null", (False, "")) == (None, ""),
+            "JavaScript fire-and-forget": observed["javascript"].get("fire", (None, "")) == (42.0, ""),
+            "JavaScript error": bool(observed["javascript"].get("error", (None, ""))[1]),
+            "unique JavaScript tokens": len(observed["javascript_tokens"])
+            == len(set(observed["javascript_tokens"])),
+            "no fire-and-forget result": not observed["unexpected_javascript_tokens"],
+            "custom user agent": observed["javascript"].get("custom_ua", (None, ""))[0]
+            == "FIT-WebView-Smoke/1.0",
+            "userAgent property contract": observed["custom_user_agent_property"],
+            "reset user agent": observed["javascript"].get("reset_ua", (None, ""))[0]
+            == observed["default_user_agent"],
+            "application name user agent": "FITWebViewSmoke"
+            in (observed["javascript"].get("app_ua", ("", ""))[0] or ""),
+            "data/cache clear invoked": observed["data_clear_invoked"],
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
         app.exit(0 if all(checks.values()) else 1)
+
+    javascript_requests = {}
+
+    def evaluate(label: str, script: str) -> int:
+        token = web_view.evaluateJavaScriptWithResult(script)
+        javascript_requests[token] = label
+        observed["javascript_tokens"].append(token)
+        print(f"evaluateJavaScriptWithResult: {label}, token={token}", flush=True)
+        return token
+
+    def start_javascript_smoke() -> None:
+        phase["value"] = "javascript"
+        evaluate("default_ua", "navigator.userAgent")
+
+    def on_javascript_result(result, token: int, error: str) -> None:
+        label = javascript_requests.pop(token, None)
+        print(f"javaScriptResult: token={token}, label={label}, result={result!r}, error={error!r}", flush=True)
+        if label is None:
+            observed["unexpected_javascript_tokens"].append(token)
+            return
+        observed["javascript"][label] = (result, error)
+
+        if label == "default_ua":
+            observed["default_user_agent"] = result
+            web_view.setUserAgent("FIT-WebView-Smoke/1.0")
+            observed["custom_user_agent_property"] = web_view.userAgent() == "FIT-WebView-Smoke/1.0"
+            evaluate("custom_ua", "navigator.userAgent")
+        elif label == "custom_ua":
+            web_view.resetUserAgent()
+            evaluate("reset_ua", "navigator.userAgent")
+        elif label == "reset_ua":
+            web_view.setApplicationNameForUserAgent("FITWebViewSmoke")
+            evaluate("app_ua", "navigator.userAgent")
+        elif label == "app_ua":
+            web_view.evaluateJavaScript("window.__fitFireAndForget = 41")
+            evaluate("number", "6 * 7")
+            evaluate("string", "'linux-js'")
+            evaluate("boolean", "true")
+            evaluate("null", "null")
+            evaluate("error", "throw new Error('expected Linux smoke error')")
+            QTimer.singleShot(100, lambda: evaluate("fire", "window.__fitFireAndForget + 1"))
+            web_view.clearCacheData()
+            web_view.clearWebsiteData()
+            observed["data_clear_invoked"] = True
+        required = {"number", "string", "boolean", "null", "error", "fire"}
+        if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
+            phase["value"] = "done"
+            QTimer.singleShot(250, finish_automated_smoke)
+
+    web_view.javaScriptResult.connect(on_javascript_result)
 
     def on_load_finished(ok: bool) -> None:
         observed["finished"].append(ok)
@@ -117,8 +190,7 @@ def main() -> int:
             return
         if not ok:
             if phase["value"] == "failure":
-                phase["value"] = "done"
-                QTimer.singleShot(100, finish_automated_smoke)
+                QTimer.singleShot(100, start_javascript_smoke)
             else:
                 app.exit(1)
             return
