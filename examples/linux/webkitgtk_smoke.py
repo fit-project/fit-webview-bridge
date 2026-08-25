@@ -1,10 +1,33 @@
 import sys
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import quote
 
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 from fit_webview_bridge import systemwebview
+
+
+DOWNLOAD_PAYLOAD = b"FIT WebView Bridge Linux download smoke\n"
+
+
+class DownloadHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path != "/download":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", 'attachment; filename="smoke-download.txt"')
+        self.send_header("Content-Length", str(len(DOWNLOAD_PAYLOAD)))
+        self.end_headers()
+        self.wfile.write(DOWNLOAD_PAYLOAD)
+
+    def log_message(self, _format: str, *_args) -> None:
+        pass
 
 
 def data_url(title: str, body: str) -> QUrl:
@@ -16,6 +39,10 @@ def main() -> int:
     automated = "--automated" in sys.argv
     qt_args = [argument for argument in sys.argv if argument != "--automated"]
     app = QApplication(qt_args)
+    download_temp = tempfile.TemporaryDirectory(prefix="fit-webview-download-smoke-") if automated else None
+    download_server = ThreadingHTTPServer(("127.0.0.1", 0), DownloadHandler) if automated else None
+    if download_server is not None:
+        threading.Thread(target=download_server.serve_forever, daemon=True).start()
     window = QMainWindow()
     window.setWindowTitle("FIT WebView Bridge — Linux WebKitGTK navigation smoke test")
 
@@ -58,6 +85,11 @@ def main() -> int:
         "default_user_agent": "",
         "custom_user_agent_property": False,
         "data_clear_invoked": False,
+        "download_directory": False,
+        "download_started": [],
+        "download_progress": [],
+        "download_finished": [],
+        "download_failed": [],
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -128,10 +160,73 @@ def main() -> int:
             "application name user agent": "FITWebViewSmoke"
             in (observed["javascript"].get("app_ua", ("", ""))[0] or ""),
             "data/cache clear invoked": observed["data_clear_invoked"],
+            "download directory": observed["download_directory"],
+            "downloadStarted": len(observed["download_started"]) == 2,
+            "downloadProgress": any(done == len(DOWNLOAD_PAYLOAD) and total == len(DOWNLOAD_PAYLOAD)
+                                    for done, total in observed["download_progress"]),
+            "downloadFinished": len(observed["download_finished"]) == 2,
+            "download contents": all(item[3] == DOWNLOAD_PAYLOAD for item in observed["download_finished"]),
+            "download filenames": [item[0] for item in observed["download_finished"]]
+            == ["smoke-download (1).txt", "smoke-download (2).txt"],
+            "download source URL": all(item[2].endswith("/download") for item in observed["download_finished"]),
+            "existing file preserved": (Path(download_temp.name) / "smoke-download.txt").read_bytes()
+            == b"pre-existing\n",
+            "download failure": bool(observed["download_failed"] and observed["download_failed"][-1][1]),
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
         app.exit(0 if all(checks.values()) else 1)
+
+    def download_url() -> QUrl:
+        port = download_server.server_address[1]
+        return QUrl(f"http://127.0.0.1:{port}/download")
+
+    def trigger_download() -> None:
+        web_view.setUrl(download_url())
+
+    def start_download_smoke() -> None:
+        phase["value"] = "download"
+        directory = Path(download_temp.name)
+        (directory / "smoke-download.txt").write_bytes(b"pre-existing\n")
+        web_view.setDownloadDirectory(str(directory))
+        observed["download_directory"] = web_view.downloadDirectory() == str(directory)
+        trigger_download()
+
+    def on_download_started(name: str, path: str) -> None:
+        observed["download_started"].append((name, path))
+        print(f"downloadStarted: name={name!r}, path={path!r}", flush=True)
+
+    def on_download_progress(received: int, total: int) -> None:
+        observed["download_progress"].append((received, total))
+        print(f"downloadProgress: {received}/{total}", flush=True)
+
+    def on_download_finished(info) -> None:
+        file_name = info.downloadFileName()
+        directory = info.downloadDirectory()
+        source_url = info.downloadUrl().toString()
+        contents = (Path(directory) / file_name).read_bytes()
+        observed["download_finished"].append((file_name, directory, source_url, contents))
+        print(f"downloadFinished: file={file_name!r}, directory={directory!r}, url={source_url!r}", flush=True)
+        if len(observed["download_finished"]) == 1:
+            QTimer.singleShot(100, trigger_download)
+        elif len(observed["download_finished"]) == 2:
+            invalid_directory = Path(download_temp.name) / "not-a-directory"
+            invalid_directory.write_text("file, not directory", encoding="utf-8")
+            web_view.setDownloadDirectory(str(invalid_directory))
+            phase["value"] = "download_failure"
+            QTimer.singleShot(100, trigger_download)
+
+    def on_download_failed(path: str, error: str) -> None:
+        observed["download_failed"].append((path, error))
+        print(f"downloadFailed: path={path!r}, error={error!r}", flush=True)
+        if phase["value"] == "download_failure":
+            phase["value"] = "done"
+            QTimer.singleShot(250, finish_automated_smoke)
+
+    web_view.downloadStarted.connect(on_download_started)
+    web_view.downloadProgress.connect(on_download_progress)
+    web_view.downloadFinished.connect(on_download_finished)
+    web_view.downloadFailed.connect(on_download_failed)
 
     javascript_requests = {}
 
@@ -178,8 +273,7 @@ def main() -> int:
             observed["data_clear_invoked"] = True
         required = {"number", "string", "boolean", "null", "error", "fire"}
         if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
-            phase["value"] = "done"
-            QTimer.singleShot(250, finish_automated_smoke)
+            QTimer.singleShot(250, start_download_smoke)
 
     web_view.javaScriptResult.connect(on_javascript_result)
 
@@ -191,6 +285,8 @@ def main() -> int:
         if not ok:
             if phase["value"] == "failure":
                 QTimer.singleShot(100, start_javascript_smoke)
+            elif phase["value"] in ("download", "download_failure"):
+                return
             else:
                 app.exit(1)
             return
@@ -241,7 +337,13 @@ def main() -> int:
         address.setText(initial_url.toString())
         web_view.setUrl(initial_url)
 
-    return app.exec()
+    result = app.exec()
+    if download_server is not None:
+        download_server.shutdown()
+        download_server.server_close()
+    if download_temp is not None:
+        download_temp.cleanup()
+    return result
 
 
 if __name__ == "__main__":

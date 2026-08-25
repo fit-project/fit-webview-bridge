@@ -70,6 +70,15 @@ QT_QPA_PLATFORM=xcb \
 ./.venv311/bin/python examples/linux/webkitgtk_smoke.py
 ```
 
+For the self-checking smoke workflow, including navigation, JavaScript,
+User-Agent, data clearing, and downloads served by a local HTTP server, run:
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+QT_QPA_PLATFORM=xcb \
+./.venv311/bin/python examples/linux/webkitgtk_smoke.py --automated
+```
+
 `Could NOT find WrapVulkanHeaders` is a non-fatal Qt diagnostic for this build.
 
 ## Linux API notes
@@ -89,3 +98,9 @@ through its configuration object.
 installed WebKitGTK, including caches, storage, databases, cookies, HSTS/ITP,
 service-worker registrations, and DOM cache data. `clearCacheData()` is limited
 to WebKitGTK's memory and disk cache types. Both operations are asynchronous.
+
+Downloads require an explicit directory configured with
+`setDownloadDirectory()`. The Linux backend does not silently fall back to a
+system directory. Existing files are preserved by adding ` (N)` before the
+extension. Download progress reports cumulative received bytes and the response
+Content-Length, or `-1` when WebKitGTK does not provide a total size.

@@ -2,7 +2,10 @@
 
 #include <QApplication>
 #include <QDebug>
+#include <QDir>
+#include <QFileInfo>
 #include <QFocusEvent>
+#include <QHash>
 #include <QKeyEvent>
 #include <QMetaObject>
 #include <QMouseEvent>
@@ -16,6 +19,7 @@
 #include <QtMath>
 
 #include <atomic>
+#include <limits>
 #include <memory>
 
 // GLib/GTK headers contain structure members named "signals", which conflicts
@@ -139,6 +143,14 @@ void websiteDataCleared(GObject* source, GAsyncResult* result, gpointer) {
 } // namespace
 
 struct SystemWebViewWidget::Impl {
+    struct DownloadState {
+        QString suggestedFileName;
+        QString finalPath;
+        QUrl sourceUrl;
+        qint64 expectedBytes = -1;
+        bool failed = false;
+    };
+
     SystemWebViewWidget* owner = nullptr;
     GtkWidget* plug = nullptr;
     GtkWidget* webView = nullptr;
@@ -146,6 +158,7 @@ struct SystemWebViewWidget::Impl {
     QWidget* container = nullptr;
     QTimer* glibPump = nullptr;
     QUrl currentUrl;
+    QUrl navigationDisplayUrl;
     QString currentTitle;
     int currentProgress = -1;
     bool loadFailed = false;
@@ -154,8 +167,187 @@ struct SystemWebViewWidget::Impl {
     bool available = false;
     QString customUserAgent;
     QString applicationNameForUserAgent;
+    QString downloadDirectory;
+    WebKitWebContext* webContext = nullptr;
+    gulong downloadStartedHandler = 0;
+    QHash<WebKitDownload*, DownloadState*> downloads;
 
     WebKitWebView* nativeWebView() const { return WEBKIT_WEB_VIEW(webView); }
+
+    static QString safeFileName(const char* suggestedFileName) {
+        QString name = suggestedFileName != nullptr ? QString::fromUtf8(suggestedFileName).trimmed() : QString();
+        name.replace('/', '_');
+        name.replace('\\', '_');
+        for (qsizetype i = name.size() - 1; i >= 0; --i) {
+            if (name.at(i).isNull() || name.at(i).category() == QChar::Other_Control) {
+                name.remove(i, 1);
+            }
+        }
+        if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral("..")) {
+            return QStringLiteral("download");
+        }
+        return name;
+    }
+
+    static QString uniqueDownloadPath(const QString& directory, const QString& fileName) {
+        const QDir dir(directory);
+        const QString initialPath = dir.filePath(fileName);
+        if (!QFileInfo::exists(initialPath)) {
+            return initialPath;
+        }
+
+        const qsizetype dot = fileName.lastIndexOf('.');
+        const bool hasExtension = dot > 0 && dot < fileName.size() - 1;
+        const QString baseName = hasExtension ? fileName.left(dot) : fileName;
+        const QString extension = hasExtension ? fileName.mid(dot) : QString();
+        for (int index = 1; index < 10000; ++index) {
+            const QString candidate = dir.filePath(QStringLiteral("%1 (%2)%3").arg(baseName).arg(index).arg(extension));
+            if (!QFileInfo::exists(candidate)) {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
+    void emitDownloadFailure(DownloadState* state, const QString& error) {
+        if (owner != nullptr) {
+            emit owner->downloadFailed(state != nullptr ? state->finalPath : QString(), error);
+        }
+    }
+
+    void cleanupDownload(WebKitDownload* download) {
+        DownloadState* state = downloads.take(download);
+        if (state == nullptr) {
+            return;
+        }
+        g_signal_handlers_disconnect_by_data(download, this);
+        delete state;
+        g_object_unref(download);
+        updateNavigationDisplayUrl();
+    }
+
+    void updateNavigationDisplayUrl() {
+        if (downloads.isEmpty() && owner != nullptr && navigationDisplayUrl != currentUrl) {
+            navigationDisplayUrl = currentUrl;
+            emit owner->navigationDisplayUrlChanged(currentUrl);
+        }
+    }
+
+    static gboolean decideDownloadDestination(WebKitDownload* download, const char* suggested, gpointer data) {
+        auto* self = static_cast<Impl*>(data);
+        DownloadState* state = self->downloads.value(download, nullptr);
+        if (state == nullptr) {
+            return FALSE;
+        }
+
+        state->suggestedFileName = safeFileName(suggested);
+        const QString configuredDirectory = self->downloadDirectory;
+        if (configuredDirectory.isEmpty()) {
+            state->failed = true;
+            self->emitDownloadFailure(state, QStringLiteral("Download directory is not configured"));
+            webkit_download_cancel(download);
+            return TRUE;
+        }
+
+        QDir directory(configuredDirectory);
+        if (!directory.exists() && !QDir().mkpath(configuredDirectory)) {
+            state->failed = true;
+            self->emitDownloadFailure(
+                state, QStringLiteral("Cannot create download directory: %1").arg(configuredDirectory));
+            webkit_download_cancel(download);
+            return TRUE;
+        }
+        const QFileInfo directoryInfo(configuredDirectory);
+        if (!directoryInfo.isDir() || !directoryInfo.isWritable()) {
+            state->failed = true;
+            self->emitDownloadFailure(
+                state, QStringLiteral("Download directory is not writable: %1").arg(configuredDirectory));
+            webkit_download_cancel(download);
+            return TRUE;
+        }
+
+        state->finalPath = uniqueDownloadPath(configuredDirectory, state->suggestedFileName);
+        if (state->finalPath.isEmpty()) {
+            state->failed = true;
+            self->emitDownloadFailure(state, QStringLiteral("Cannot select a unique download filename"));
+            webkit_download_cancel(download);
+            return TRUE;
+        }
+
+        WebKitURIResponse* response = webkit_download_get_response(download);
+        if (response != nullptr) {
+            const guint64 contentLength = webkit_uri_response_get_content_length(response);
+            if (contentLength > 0 && contentLength <= static_cast<guint64>(std::numeric_limits<qint64>::max())) {
+                state->expectedBytes = static_cast<qint64>(contentLength);
+            }
+        }
+
+        const QByteArray destination = QUrl::fromLocalFile(state->finalPath).toEncoded();
+        webkit_download_set_allow_overwrite(download, FALSE);
+        webkit_download_set_destination(download, destination.constData());
+        emit self->owner->downloadStarted(state->suggestedFileName, state->finalPath);
+        emit self->owner->downloadProgress(0, state->expectedBytes);
+        return TRUE;
+    }
+
+    static void downloadReceivedData(WebKitDownload* download, guint64, gpointer data) {
+        auto* self = static_cast<Impl*>(data);
+        DownloadState* state = self->downloads.value(download, nullptr);
+        if (state == nullptr || state->failed || self->owner == nullptr) {
+            return;
+        }
+        const guint64 received = webkit_download_get_received_data_length(download);
+        const qint64 receivedBytes = received <= static_cast<guint64>(std::numeric_limits<qint64>::max())
+            ? static_cast<qint64>(received)
+            : std::numeric_limits<qint64>::max();
+        emit self->owner->downloadProgress(receivedBytes, state->expectedBytes);
+    }
+
+    static void downloadFailed(WebKitDownload* download, GError* error, gpointer data) {
+        auto* self = static_cast<Impl*>(data);
+        DownloadState* state = self->downloads.value(download, nullptr);
+        if (state == nullptr || state->failed) {
+            return;
+        }
+        state->failed = true;
+        self->emitDownloadFailure(
+            state, error != nullptr ? QString::fromUtf8(error->message) : QStringLiteral("Unknown download error"));
+    }
+
+    static void downloadFinished(WebKitDownload* download, gpointer data) {
+        auto* self = static_cast<Impl*>(data);
+        DownloadState* state = self->downloads.value(download, nullptr);
+        if (state == nullptr) {
+            return;
+        }
+        if (!state->failed && self->owner != nullptr) {
+            const QFileInfo finalFile(state->finalPath);
+            auto* info = new DownloadInfo(finalFile.fileName(), finalFile.absolutePath(), state->sourceUrl, self->owner);
+            emit self->owner->downloadFinished(info);
+        }
+        self->cleanupDownload(download);
+    }
+
+    static void contextDownloadStarted(WebKitWebContext*, WebKitDownload* download, gpointer data) {
+        auto* self = static_cast<Impl*>(data);
+        if (webkit_download_get_web_view(download) != self->nativeWebView() || self->downloads.contains(download)) {
+            return;
+        }
+
+        auto* state = new DownloadState;
+        WebKitURIRequest* request = webkit_download_get_request(download);
+        const char* sourceUri = request != nullptr ? webkit_uri_request_get_uri(request) : nullptr;
+        if (sourceUri != nullptr) {
+            state->sourceUrl = QUrl(QString::fromUtf8(sourceUri));
+        }
+
+        g_object_ref(download);
+        self->downloads.insert(download, state);
+        g_signal_connect(download, "decide-destination", G_CALLBACK(decideDownloadDestination), self);
+        g_signal_connect(download, "received-data", G_CALLBACK(downloadReceivedData), self);
+        g_signal_connect(download, "failed", G_CALLBACK(downloadFailed), self);
+        g_signal_connect(download, "finished", G_CALLBACK(downloadFinished), self);
+    }
 
     void updateUrl() {
         const char* uri = webkit_web_view_get_uri(nativeWebView());
@@ -165,7 +357,9 @@ struct SystemWebViewWidget::Impl {
         }
         currentUrl = url;
         emit owner->urlChanged(url);
-        emit owner->navigationDisplayUrlChanged(url);
+        if (!webkit_web_view_is_loading(nativeWebView())) {
+            updateNavigationDisplayUrl();
+        }
     }
 
     void updateTitle() {
@@ -222,6 +416,9 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         G_CALLBACK(+[](GtkWidget*, GdkEvent*, gpointer) -> gboolean { return TRUE; }),
         nullptr);
     d->webView = webkit_web_view_new();
+    d->webContext = webkit_web_view_get_context(WEBKIT_WEB_VIEW(d->webView));
+    d->downloadStartedHandler = g_signal_connect(
+        d->webContext, "download-started", G_CALLBACK(Impl::contextDownloadStarted), d);
     gtk_container_add(GTK_CONTAINER(d->plug), d->webView);
     gtk_widget_show_all(d->plug);
 
@@ -271,9 +468,11 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
                 self->d->updateProgress();
             } else if (event == WEBKIT_LOAD_COMMITTED) {
                 self->d->updateUrl();
+                self->d->updateNavigationDisplayUrl();
             } else if (event == WEBKIT_LOAD_FINISHED) {
                 self->d->updateUrl();
                 self->d->updateTitle();
+                self->d->updateNavigationDisplayUrl();
                 if (!self->d->loadFailed) {
                     self->d->updateProgress();
                     if (self->d->currentProgress != 100) {
@@ -324,6 +523,17 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
 SystemWebViewWidget::~SystemWebViewWidget() {
     if (d->glibPump != nullptr) {
         d->glibPump->stop();
+    }
+    if (d->webContext != nullptr && d->downloadStartedHandler != 0) {
+        g_signal_handler_disconnect(d->webContext, d->downloadStartedHandler);
+        d->downloadStartedHandler = 0;
+    }
+    const QList<WebKitDownload*> activeDownloads = d->downloads.keys();
+    for (WebKitDownload* download : activeDownloads) {
+        g_signal_handlers_disconnect_by_data(download, d);
+        webkit_download_cancel(download);
+        delete d->downloads.take(download);
+        g_object_unref(download);
     }
     delete d->container;
     d->container = nullptr;
@@ -440,8 +650,13 @@ quint64 SystemWebViewWidget::evaluateJavaScriptWithResult(const QString& script)
         d->nativeWebView(), utf8.constData(), utf8.size(), nullptr, nullptr, nullptr, javascriptFinished, request);
     return token;
 }
-void SystemWebViewWidget::setDownloadDirectory(const QString&) { warnUnsupported("setDownloadDirectory()"); }
-QString SystemWebViewWidget::downloadDirectory() const { return {}; }
+void SystemWebViewWidget::setDownloadDirectory(const QString& directoryPath) {
+    d->downloadDirectory = QDir::cleanPath(QDir::fromNativeSeparators(directoryPath.trimmed()));
+    if (directoryPath.trimmed().isEmpty()) {
+        d->downloadDirectory.clear();
+    }
+}
+QString SystemWebViewWidget::downloadDirectory() const { return d->downloadDirectory; }
 void SystemWebViewWidget::renderErrorPage(const QUrl&, const QString&, int) { warnUnsupported("renderErrorPage()"); }
 void SystemWebViewWidget::setUserAgent(const QString& userAgent) {
     d->customUserAgent = userAgent.trimmed();
