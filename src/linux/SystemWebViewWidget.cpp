@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QFocusEvent>
 #include <QKeyEvent>
+#include <QtMath>
 #include <QMouseEvent>
 #include <QResizeEvent>
 #include <QShowEvent>
@@ -67,16 +68,71 @@ bool initializeGtkX11() {
 } // namespace
 
 struct SystemWebViewWidget::Impl {
+    SystemWebViewWidget* owner = nullptr;
     GtkWidget* plug = nullptr;
     GtkWidget* webView = nullptr;
     QWindow* foreignWindow = nullptr;
     QWidget* container = nullptr;
     QTimer* glibPump = nullptr;
     QUrl currentUrl;
+    QString currentTitle;
+    int currentProgress = -1;
+    bool loadFailed = false;
+    bool canGoBack = false;
+    bool canGoForward = false;
     bool available = false;
+
+    WebKitWebView* nativeWebView() const { return WEBKIT_WEB_VIEW(webView); }
+
+    void updateUrl() {
+        const char* uri = webkit_web_view_get_uri(nativeWebView());
+        const QUrl url = uri != nullptr ? QUrl(QString::fromUtf8(uri)) : QUrl();
+        if (currentUrl == url) {
+            return;
+        }
+        currentUrl = url;
+        emit owner->urlChanged(url);
+        emit owner->navigationDisplayUrlChanged(url);
+    }
+
+    void updateTitle() {
+        const char* title = webkit_web_view_get_title(nativeWebView());
+        const QString value = title != nullptr ? QString::fromUtf8(title) : QString();
+        if (currentTitle == value) {
+            return;
+        }
+        currentTitle = value;
+        emit owner->titleChanged(value);
+    }
+
+    void updateProgress() {
+        if (loadFailed) {
+            return;
+        }
+        const int percent = qBound(0, qRound(webkit_web_view_get_estimated_load_progress(nativeWebView()) * 100.0), 100);
+        if (currentProgress == percent) {
+            return;
+        }
+        currentProgress = percent;
+        emit owner->loadProgress(percent);
+    }
+
+    void updateNavigationState() {
+        const bool back = webkit_web_view_can_go_back(nativeWebView());
+        const bool forward = webkit_web_view_can_go_forward(nativeWebView());
+        if (canGoBack != back) {
+            canGoBack = back;
+            emit owner->canGoBackChanged(back);
+        }
+        if (canGoForward != forward) {
+            canGoForward = forward;
+            emit owner->canGoForwardChanged(forward);
+        }
+    }
 };
 
 SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
+    d->owner = this;
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -114,15 +170,22 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
     g_signal_connect(
         d->webView,
         "notify::uri",
-        G_CALLBACK(+[](WebKitWebView* webView, GParamSpec*, gpointer data) {
-            auto* self = static_cast<SystemWebViewWidget*>(data);
-            const char* uri = webkit_web_view_get_uri(webView);
-            const QUrl url = uri != nullptr ? QUrl(QString::fromUtf8(uri)) : QUrl();
-            if (self->d->currentUrl != url) {
-                self->d->currentUrl = url;
-                emit self->urlChanged(url);
-                emit self->navigationDisplayUrlChanged(url);
-            }
+        G_CALLBACK(+[](WebKitWebView*, GParamSpec*, gpointer data) {
+            static_cast<SystemWebViewWidget*>(data)->d->updateUrl();
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
+        "notify::title",
+        G_CALLBACK(+[](WebKitWebView*, GParamSpec*, gpointer data) {
+            static_cast<SystemWebViewWidget*>(data)->d->updateTitle();
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
+        "notify::estimated-load-progress",
+        G_CALLBACK(+[](WebKitWebView*, GParamSpec*, gpointer data) {
+            static_cast<SystemWebViewWidget*>(data)->d->updateProgress();
         }),
         this);
     g_signal_connect(
@@ -131,11 +194,45 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent event, gpointer data) {
             auto* self = static_cast<SystemWebViewWidget*>(data);
             if (event == WEBKIT_LOAD_STARTED) {
-                emit self->loadProgress(0);
+                self->d->loadFailed = false;
+                self->d->updateProgress();
+            } else if (event == WEBKIT_LOAD_COMMITTED) {
+                self->d->updateUrl();
             } else if (event == WEBKIT_LOAD_FINISHED) {
-                emit self->loadProgress(100);
-                emit self->loadFinished(true);
+                self->d->updateUrl();
+                self->d->updateTitle();
+                if (!self->d->loadFailed) {
+                    self->d->updateProgress();
+                    if (self->d->currentProgress != 100) {
+                        self->d->currentProgress = 100;
+                        emit self->loadProgress(100);
+                    }
+                    emit self->loadFinished(true);
+                }
             }
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
+        "load-failed",
+        G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char*, GError*, gpointer data) -> gboolean {
+            auto* self = static_cast<SystemWebViewWidget*>(data);
+            self->d->loadFailed = true;
+            if (self->d->currentProgress != 0) {
+                self->d->currentProgress = 0;
+                emit self->loadProgress(0);
+            }
+            emit self->loadFinished(false);
+            return TRUE;
+        }),
+        this);
+
+    WebKitBackForwardList* history = webkit_web_view_get_back_forward_list(WEBKIT_WEB_VIEW(d->webView));
+    g_signal_connect(
+        history,
+        "changed",
+        G_CALLBACK(+[](WebKitBackForwardList*, WebKitBackForwardListItem*, GList*, gpointer data) {
+            static_cast<SystemWebViewWidget*>(data)->d->updateNavigationState();
         }),
         this);
 
@@ -175,10 +272,7 @@ void SystemWebViewWidget::setUrl(const QUrl& url) {
         }
         return;
     }
-    d->currentUrl = url;
     webkit_web_view_load_uri(WEBKIT_WEB_VIEW(d->webView), url.toString().toUtf8().constData());
-    emit urlChanged(url);
-    emit navigationDisplayUrlChanged(url);
 }
 
 void SystemWebViewWidget::showEvent(QShowEvent* event) {
@@ -204,10 +298,26 @@ void SystemWebViewWidget::keyPressEvent(QKeyEvent* event) {
     QWidget::keyPressEvent(event);
 }
 
-void SystemWebViewWidget::back() { warnUnsupported("back()"); }
-void SystemWebViewWidget::forward() { warnUnsupported("forward()"); }
-void SystemWebViewWidget::stop() { warnUnsupported("stop()"); }
-void SystemWebViewWidget::reload() { warnUnsupported("reload()"); }
+void SystemWebViewWidget::back() {
+    if (d->available && webkit_web_view_can_go_back(d->nativeWebView())) {
+        webkit_web_view_go_back(d->nativeWebView());
+    }
+}
+void SystemWebViewWidget::forward() {
+    if (d->available && webkit_web_view_can_go_forward(d->nativeWebView())) {
+        webkit_web_view_go_forward(d->nativeWebView());
+    }
+}
+void SystemWebViewWidget::stop() {
+    if (d->available) {
+        webkit_web_view_stop_loading(d->nativeWebView());
+    }
+}
+void SystemWebViewWidget::reload() {
+    if (d->available) {
+        webkit_web_view_reload(d->nativeWebView());
+    }
+}
 void SystemWebViewWidget::clearWebsiteData() { warnUnsupported("clearWebsiteData()"); }
 void SystemWebViewWidget::clearCacheData() { warnUnsupported("clearCacheData()"); }
 bool SystemWebViewWidget::setProxy(const QString&, int) { warnUnsupported("setProxy()"); return false; }
