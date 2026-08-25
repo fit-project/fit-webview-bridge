@@ -22,7 +22,7 @@ QtWebEngine (Chromium) does not enable proprietary codecs by default. This modul
 ## Implementation status
 
 - **macOS:** implemented and currently supported (`src/macos`, `bindings/pyside6/macos`)
-- **Linux:** backend in development; not yet supported
+- **Linux:** working X11/WebKitGTK proof of concept; backend still in development
 - **Windows:** planned; not yet supported
 
 ## Repository layout
@@ -94,12 +94,14 @@ Detailed build, test, and quality-check instructions are maintained in platform-
 ## Platform documentation
 
 - [macOS build and development guide](docs/build-macos.md)
-- Linux build guide — in development; not available yet
+- [Linux build and smoke-test guide](docs/build-linux.md)
 - Windows build guide — planned
 
 ## Examples
 
-The current PySide6 sample in `examples/macos/` demonstrates URL loading, JavaScript injection, and signal handling on macOS.
+The PySide6 samples in `examples/macos/` and `examples/linux/` demonstrate the
+native platform backends. The Linux smoke test currently requires an X11
+session and Qt's `xcb` platform plugin.
 
 ## Codec and licensing notes
 

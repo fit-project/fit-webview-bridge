@@ -71,6 +71,24 @@ set(SHIBOKEN_INCLUDE_LIST
 list(REMOVE_DUPLICATES SHIBOKEN_INCLUDE_LIST)
 list(JOIN SHIBOKEN_INCLUDE_LIST ":" SHIBOKEN_INCLUDE_ARG)
 
+# The PyPI Shiboken generator embeds libclang, but on some Linux systems it
+# detects a partial LLVM installation without Clang's builtin headers.  Feed it
+# the builtin include directory of the compiler selected by CMake so headers
+# such as stddef.h remain available to the parser.
+execute_process(
+  COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=include
+  OUTPUT_VARIABLE CXX_BUILTIN_INCLUDE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE CXX_BUILTIN_INCLUDE_RV
+)
+set(SHIBOKEN_SYSTEM_INCLUDE_OPTIONS)
+if(CXX_BUILTIN_INCLUDE_RV EQUAL 0
+    AND IS_DIRECTORY "${CXX_BUILTIN_INCLUDE_DIR}")
+  list(APPEND SHIBOKEN_SYSTEM_INCLUDE_OPTIONS
+    "--system-include-paths=${CXX_BUILTIN_INCLUDE_DIR}"
+  )
+endif()
+
 set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/shiboken_out")
 file(MAKE_DIRECTORY "${GEN_DIR}")
 set(HEADERS "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/SystemWebViewWidget.h")
@@ -80,6 +98,7 @@ execute_process(
   COMMAND "${SHIBOKEN6_GEN}"
     --generator-set=shiboken
     --enable-pyside-extensions
+    ${SHIBOKEN_SYSTEM_INCLUDE_OPTIONS}
     --include-paths=${SHIBOKEN_INCLUDE_ARG}
     --typesystem-paths=${SHIBOKEN_TYPESYSTEMS}
     --typesystem-paths=${PYSIDE_TYPESYSTEMS}

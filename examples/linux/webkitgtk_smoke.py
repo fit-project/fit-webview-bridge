@@ -3,7 +3,7 @@ import sys
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-import systemwebview
+from fit_webview_bridge import systemwebview
 
 
 def main() -> int:

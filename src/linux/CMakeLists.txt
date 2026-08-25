@@ -11,6 +11,7 @@ add_library(systemwebview_linux STATIC
   "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/SystemWebViewWidget.h"
   "${PROJECT_SOURCE_DIR}/include/fit_webview_bridge/DownloadInfo.h"
 )
+set_target_properties(systemwebview_linux PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_compile_features(systemwebview_linux PRIVATE cxx_std_17)
 target_include_directories(systemwebview_linux PUBLIC "${PROJECT_SOURCE_DIR}/include")
