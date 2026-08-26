@@ -151,4 +151,10 @@ set_target_properties(_systemwebview PROPERTIES
   SUFFIX "${PY_EXT_SUFFIX}"
   LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/fit_webview_bridge"
   BUILD_RPATH "$ORIGIN;${PYSIDE_QT_LIBDIR};${SHIBOKEN_LIB_DIR};${PYSIDE_LIB_DIR}"
+  INSTALL_RPATH "$ORIGIN;$ORIGIN/../PySide6/Qt/lib;$ORIGIN/../PySide6;$ORIGIN/../shiboken6"
+)
+
+install(TARGETS _systemwebview
+  LIBRARY DESTINATION fit_webview_bridge
+  RUNTIME DESTINATION fit_webview_bridge
 )

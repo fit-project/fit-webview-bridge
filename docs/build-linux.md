@@ -4,6 +4,14 @@ The Linux proof of concept embeds WebKitGTK in a Qt widget through X11. A real
 X11 session and Qt's `xcb` platform plugin are therefore required; headless and
 Wayland-native embedding are not currently supported.
 
+Ubuntu 24.04 is the currently validated Linux wheel baseline. Linux wheels
+contain the FIT WebView Bridge Python package and native binding, but do not
+bundle WebKitGTK, GTK, GStreamer, or other system libraries. These remain
+operating-system runtime dependencies, while Qt is supplied by the declared
+PySide6 dependency. A wheel consumer does not need CMake, Ninja, a compiler,
+the Shiboken generator, WebKitGTK development headers, or the separately
+installed Qt SDK used to build the wheel.
+
 ## Ubuntu dependencies
 
 Install the WebKitGTK/GTK development packages and the runtime libraries used
