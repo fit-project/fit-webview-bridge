@@ -31,8 +31,6 @@ jobs:
     env:
       QT_VERSION: "6.9.0"
       PYSIDE_VERSION: "6.9.0"
-      QT_ROOT: ${{ runner.temp }}/Qt
-      BUILD_DIR: ${{ github.workspace }}/build-linux-ci-py311
 
     steps:
       - name: Checkout repository
@@ -48,6 +46,8 @@ jobs:
             x86_64|amd64) ;;
             *) echo "Expected an x86_64 runner" >&2; exit 1 ;;
           esac
+          echo "QT_ROOT=${RUNNER_TEMP}/Qt" >> "${GITHUB_ENV}"
+          echo "BUILD_DIR=${RUNNER_TEMP}/build-linux-ci-py311" >> "${GITHUB_ENV}"
 
       - name: Install Ubuntu build and X11 runtime dependencies
         run: |
