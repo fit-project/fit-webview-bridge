@@ -12,6 +12,7 @@
 #include <QPointer>
 #include <QResizeEvent>
 #include <QShowEvent>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -169,6 +170,7 @@ struct SystemWebViewWidget::Impl {
     QString applicationNameForUserAgent;
     QString downloadDirectory;
     WebKitWebContext* webContext = nullptr;
+    WebKitWebsiteDataManager* websiteDataManager = nullptr;
     gulong downloadStartedHandler = 0;
     QHash<WebKitDownload*, DownloadState*> downloads;
 
@@ -415,8 +417,9 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         "delete-event",
         G_CALLBACK(+[](GtkWidget*, GdkEvent*, gpointer) -> gboolean { return TRUE; }),
         nullptr);
-    d->webView = webkit_web_view_new();
-    d->webContext = webkit_web_view_get_context(WEBKIT_WEB_VIEW(d->webView));
+    d->webContext = webkit_web_context_new();
+    d->websiteDataManager = webkit_web_context_get_website_data_manager(d->webContext);
+    d->webView = webkit_web_view_new_with_context(d->webContext);
     d->downloadStartedHandler = g_signal_connect(
         d->webContext, "download-started", G_CALLBACK(Impl::contextDownloadStarted), d);
     gtk_container_add(GTK_CONTAINER(d->plug), d->webView);
@@ -541,6 +544,11 @@ SystemWebViewWidget::~SystemWebViewWidget() {
     if (d->plug != nullptr) {
         gtk_widget_destroy(d->plug);
     }
+    if (d->webContext != nullptr) {
+        g_object_unref(d->webContext);
+        d->webContext = nullptr;
+        d->websiteDataManager = nullptr;
+    }
     delete d;
 }
 
@@ -627,9 +635,66 @@ void SystemWebViewWidget::clearCacheData() {
         websiteDataCleared,
         nullptr);
 }
-bool SystemWebViewWidget::setProxy(const QString&, int) { warnUnsupported("setProxy()"); return false; }
-void SystemWebViewWidget::clearProxy() { warnUnsupported("clearProxy()"); }
-bool SystemWebViewWidget::hasExplicitProxySupport() const { return false; }
+bool SystemWebViewWidget::setProxy(const QString& host, int port) {
+    if (!hasExplicitProxySupport() || QThread::currentThread() != thread() || port < 1 || port > 65535) {
+        return false;
+    }
+
+    const QString trimmedHost = host.trimmed();
+    if (trimmedHost.isEmpty() || trimmedHost.contains('/') || trimmedHost.contains('@') || trimmedHost.contains('?')
+        || trimmedHost.contains('#')) {
+        return false;
+    }
+    for (const QChar character : trimmedHost) {
+        if (character.isSpace() || character.category() == QChar::Other_Control) {
+            return false;
+        }
+    }
+
+    QUrl proxyUrl;
+    proxyUrl.setScheme(QStringLiteral("http"));
+    proxyUrl.setHost(trimmedHost);
+    proxyUrl.setPort(port);
+    if (!proxyUrl.isValid() || proxyUrl.host().isEmpty()) {
+        return false;
+    }
+
+    const QByteArray encodedProxy = proxyUrl.toEncoded(QUrl::FullyEncoded);
+    WebKitNetworkProxySettings* settings = webkit_network_proxy_settings_new(encodedProxy.constData(), nullptr);
+    if (settings == nullptr) {
+        return false;
+    }
+    webkit_website_data_manager_set_network_proxy_settings(
+        d->websiteDataManager, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, settings);
+    webkit_network_proxy_settings_free(settings);
+    return true;
+}
+void SystemWebViewWidget::clearProxy() {
+    if (!hasExplicitProxySupport()) {
+        return;
+    }
+    if (QThread::currentThread() != thread()) {
+        const QPointer<SystemWebViewWidget> guard(this);
+        QMetaObject::invokeMethod(
+            this,
+            [guard] {
+                if (!guard.isNull()) {
+                    guard->clearProxy();
+                }
+            },
+            Qt::QueuedConnection);
+        return;
+    }
+    webkit_website_data_manager_set_network_proxy_settings(
+        d->websiteDataManager, WEBKIT_NETWORK_PROXY_MODE_DEFAULT, nullptr);
+}
+bool SystemWebViewWidget::hasExplicitProxySupport() const {
+#if WEBKIT_CHECK_VERSION(2, 32, 0)
+    return d->available && d->websiteDataManager != nullptr;
+#else
+    return false;
+#endif
+}
 void SystemWebViewWidget::evaluateJavaScript(const QString& script) {
     if (!d->available) {
         return;

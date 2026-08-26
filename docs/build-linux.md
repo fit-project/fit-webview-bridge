@@ -104,3 +104,16 @@ Downloads require an explicit directory configured with
 system directory. Existing files are preserved by adding ` (N)` before the
 extension. Download progress reports cumulative received bytes and the response
 Content-Length, or `-1` when WebKitGTK does not provide a total size.
+
+Explicit proxy configuration uses a dedicated WebKit context and website data
+manager for each `SystemWebViewWidget`, so changing one widget does not alter
+unrelated views. `setProxy()` installs an HTTP proxy URI as WebKitGTK's custom
+default proxy for both HTTP and HTTPS requests; HTTPS is expected to use CONNECT
+according to the WebKitGTK network stack, but the automated smoke test currently
+validates HTTP only. Unlike the macOS API, the Linux configuration was verified
+to work after prior navigation and does not need to be set immediately after
+widget construction. Repeated calls replace the previous configuration.
+
+`clearProxy()` restores WebKitGTK's default/system proxy mode for that widget's
+data manager. It does not clear cookies, storage, website data, or cache; the
+automated smoke test verifies preservation of local storage across the reset.

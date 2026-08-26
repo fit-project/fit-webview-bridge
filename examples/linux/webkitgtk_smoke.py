@@ -15,7 +15,18 @@ DOWNLOAD_PAYLOAD = b"FIT WebView Bridge Linux download smoke\n"
 
 
 class DownloadHandler(BaseHTTPRequestHandler):
+    direct_requests = []
+
     def do_GET(self) -> None:
+        if self.path.startswith("/proxy-page"):
+            self.__class__.direct_requests.append(self.path)
+            payload = b"<!doctype html><html><head><title>Direct origin</title></head><body>direct</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path != "/download":
             self.send_error(404)
             return
@@ -25,6 +36,25 @@ class DownloadHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(DOWNLOAD_PAYLOAD)))
         self.end_headers()
         self.wfile.write(DOWNLOAD_PAYLOAD)
+
+    def log_message(self, _format: str, *_args) -> None:
+        pass
+
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    requests = []
+
+    def do_GET(self) -> None:
+        self.__class__.requests.append((self.server.proxy_name, self.path, self.headers.get("Host", "")))
+        payload = (
+            b"<!doctype html><html><head><title>Proxy routed</title></head>"
+            b"<body><script>localStorage.setItem('fitProxyPreserved','yes')</script>proxied</body></html>"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def log_message(self, _format: str, *_args) -> None:
         pass
@@ -41,8 +71,14 @@ def main() -> int:
     app = QApplication(qt_args)
     download_temp = tempfile.TemporaryDirectory(prefix="fit-webview-download-smoke-") if automated else None
     download_server = ThreadingHTTPServer(("127.0.0.1", 0), DownloadHandler) if automated else None
+    first_proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler) if automated else None
+    second_proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler) if automated else None
     if download_server is not None:
+        first_proxy.proxy_name = "first"
+        second_proxy.proxy_name = "second"
         threading.Thread(target=download_server.serve_forever, daemon=True).start()
+        threading.Thread(target=first_proxy.serve_forever, daemon=True).start()
+        threading.Thread(target=second_proxy.serve_forever, daemon=True).start()
     window = QMainWindow()
     window.setWindowTitle("FIT WebView Bridge — Linux WebKitGTK navigation smoke test")
 
@@ -90,6 +126,13 @@ def main() -> int:
         "download_progress": [],
         "download_finished": [],
         "download_failed": [],
+        "proxy_supported": False,
+        "proxy_invalid_rejected": False,
+        "proxy_configured": False,
+        "proxy_replaced": False,
+        "proxy_request": False,
+        "proxy_cleared": False,
+        "proxy_storage_preserved": False,
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -172,6 +215,13 @@ def main() -> int:
             "existing file preserved": (Path(download_temp.name) / "smoke-download.txt").read_bytes()
             == b"pre-existing\n",
             "download failure": bool(observed["download_failed"] and observed["download_failed"][-1][1]),
+            "proxy support": observed["proxy_supported"],
+            "invalid proxies rejected": observed["proxy_invalid_rejected"],
+            "proxy configured": observed["proxy_configured"],
+            "proxy replaced": observed["proxy_replaced"],
+            "HTTP request through proxy": observed["proxy_request"],
+            "clearProxy bypassed explicit proxy": observed["proxy_cleared"],
+            "clearProxy preserved storage": observed["proxy_storage_preserved"],
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -230,6 +280,27 @@ def main() -> int:
 
     javascript_requests = {}
 
+    def proxy_page_url(query: str) -> QUrl:
+        port = download_server.server_address[1]
+        return QUrl(f"http://127.0.0.1:{port}/proxy-page?{query}")
+
+    def start_proxy_smoke() -> None:
+        phase["value"] = "proxy"
+        ProxyHandler.requests.clear()
+        DownloadHandler.direct_requests.clear()
+        observed["proxy_supported"] = web_view.hasExplicitProxySupport()
+        observed["proxy_invalid_rejected"] = not any(
+            (
+                web_view.setProxy("", 8080),
+                web_view.setProxy("127.0.0.1", 0),
+                web_view.setProxy("127.0.0.1", 65536),
+                web_view.setProxy("http://malformed", 8080),
+            )
+        )
+        observed["proxy_configured"] = web_view.setProxy("127.0.0.1", first_proxy.server_address[1])
+        observed["proxy_replaced"] = web_view.setProxy("127.0.0.1", second_proxy.server_address[1])
+        web_view.setUrl(proxy_page_url("through-proxy"))
+
     def evaluate(label: str, script: str) -> int:
         token = web_view.evaluateJavaScriptWithResult(script)
         javascript_requests[token] = label
@@ -271,9 +342,12 @@ def main() -> int:
             web_view.clearCacheData()
             web_view.clearWebsiteData()
             observed["data_clear_invoked"] = True
+        elif label == "proxy_storage":
+            observed["proxy_storage_preserved"] = result == "yes" and not error
+            QTimer.singleShot(100, start_download_smoke)
         required = {"number", "string", "boolean", "null", "error", "fire"}
         if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
-            QTimer.singleShot(250, start_download_smoke)
+            QTimer.singleShot(250, start_proxy_smoke)
 
     web_view.javaScriptResult.connect(on_javascript_result)
 
@@ -292,7 +366,23 @@ def main() -> int:
             return
 
         current_phase = phase["value"]
-        if current_phase == "first":
+        if current_phase == "proxy":
+            observed["proxy_request"] = (
+                len(ProxyHandler.requests) == 1
+                and ProxyHandler.requests[0][0] == "second"
+                and ProxyHandler.requests[0][1].startswith("http://127.0.0.1:")
+                and not DownloadHandler.direct_requests
+            )
+            web_view.clearProxy()
+            phase["value"] = "proxy_cleared"
+            QTimer.singleShot(100, lambda: web_view.setUrl(proxy_page_url("after-clear")))
+        elif current_phase == "proxy_cleared":
+            observed["proxy_cleared"] = (
+                len(ProxyHandler.requests) == 1
+                and any(path.startswith("/proxy-page?after-clear") for path in DownloadHandler.direct_requests)
+            )
+            evaluate("proxy_storage", "localStorage.getItem('fitProxyPreserved')")
+        elif current_phase == "first":
             phase["value"] = "second"
             QTimer.singleShot(100, lambda: web_view.setUrl(second_url))
         elif current_phase == "second":
@@ -339,8 +429,9 @@ def main() -> int:
 
     result = app.exec()
     if download_server is not None:
-        download_server.shutdown()
-        download_server.server_close()
+        for server in (download_server, first_proxy, second_proxy):
+            server.shutdown()
+            server.server_close()
     if download_temp is not None:
         download_temp.cleanup()
     return result
