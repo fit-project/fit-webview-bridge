@@ -135,3 +135,14 @@ text is HTML-escaped and the internal page has no external resources.
 internal page does not emit a later `loadFinished(true)`. Redirects, successful
 responses, attachments, and unsupported MIME types intended for download are
 not classified as HTTP error pages.
+
+New-window requests such as `target="_blank"` and `window.open()` are handled
+inside the existing `SystemWebViewWidget`. The Linux backend rejects creation
+of a secondary WebKitGTK view and loads the supplied request in the current
+view, preserving its normal navigation history, download handling, and custom
+HTTP error-page behavior. The automated smoke test verifies Back/Forward,
+popup-initiated downloads, and popup-initiated HTTP 404 responses.
+
+Popup destinations are accepted for HTTP, HTTPS, file, data, about, and blob
+URLs. Empty destinations and schemes such as `mailto`, `tel`, and `javascript`
+are ignored; the backend does not launch external applications for them.

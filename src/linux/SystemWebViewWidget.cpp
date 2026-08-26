@@ -90,6 +90,16 @@ bool initializeGtkX11() {
     return initialized;
 }
 
+bool isSupportedPopupUrl(const QUrl& url) {
+    if (!url.isValid() || url.isEmpty()) {
+        return false;
+    }
+    const QString scheme = url.scheme().toLower();
+    return scheme == QStringLiteral("http") || scheme == QStringLiteral("https")
+        || scheme == QStringLiteral("file") || scheme == QStringLiteral("data")
+        || scheme == QStringLiteral("about") || scheme == QStringLiteral("blob");
+}
+
 QVariant variantFromJscValue(JSCValue* value) {
     if (value == nullptr || jsc_value_is_null(value) || jsc_value_is_undefined(value)) {
         return {};
@@ -511,6 +521,27 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
     d->container->setFocusPolicy(Qt::StrongFocus);
     layout->addWidget(d->container);
 
+    g_signal_connect(
+        d->webView,
+        "create",
+        G_CALLBACK(+[](WebKitWebView* webView, WebKitNavigationAction* navigationAction, gpointer data) -> GtkWidget* {
+            auto* self = static_cast<SystemWebViewWidget*>(data);
+            WebKitURIRequest* request = webkit_navigation_action_get_request(navigationAction);
+            const char* uri = request != nullptr ? webkit_uri_request_get_uri(request) : nullptr;
+            const QUrl destination = uri != nullptr ? QUrl(QString::fromUtf8(uri)) : QUrl();
+            if (!isSupportedPopupUrl(destination)) {
+                qWarning() << "Ignoring unsupported popup URL:" << destination;
+                return nullptr;
+            }
+
+            self->d->httpErrorPending = false;
+            self->d->internalErrorPageLoading = false;
+            self->d->internalErrorPageCommitted = false;
+            self->d->internalErrorUrl = QUrl();
+            webkit_web_view_load_request(webView, request);
+            return nullptr;
+        }),
+        this);
     g_signal_connect(
         d->webView,
         "decide-policy",

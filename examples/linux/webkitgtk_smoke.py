@@ -19,6 +19,45 @@ class DownloadHandler(BaseHTTPRequestHandler):
     direct_requests = []
 
     def do_GET(self) -> None:
+        if self.path == "/popup-source":
+            payload = (
+                b"<!doctype html><html><head><title>Popup source</title></head><body>"
+                b'<a id="popup-link" href="/popup-target" target="_blank">Open target</a>'
+                b'<button id="popup-js" onclick="window.open(\'/popup-js\', \'_blank\')">Open JS</button>'
+                b'<a id="popup-download" href="/popup-download" target="_blank">Download</a>'
+                b'<a id="popup-error" href="/http-404?from=popup" target="_blank">Error</a>'
+                b"</body></html>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/popup-target":
+            payload = b"<!doctype html><html><head><title>Popup target</title></head><body>POPUP TARGET</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/popup-js":
+            payload = b"<!doctype html><html><head><title>Popup JavaScript</title></head><body>POPUP JS</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/popup-download":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="popup-download.txt"')
+            self.send_header("Content-Length", str(len(DOWNLOAD_PAYLOAD)))
+            self.end_headers()
+            self.wfile.write(DOWNLOAD_PAYLOAD)
+            return
         if self.path.startswith("/http-ok"):
             payload = b"<!doctype html><html><head><title>HTTP smoke OK</title></head><body>HTTP OK</body></html>"
             self.send_response(200)
@@ -178,6 +217,9 @@ def main() -> int:
         "http_results": {},
         "http_failures": {},
         "http_successes_after_failure": 0,
+        "popup_results": {},
+        "popup_error_failures": 0,
+        "popup_error_successes": 0,
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -251,14 +293,14 @@ def main() -> int:
             in (observed["javascript"].get("app_ua", ("", ""))[0] or ""),
             "data/cache clear invoked": observed["data_clear_invoked"],
             "download directory": observed["download_directory"],
-            "downloadStarted": len(observed["download_started"]) == 2,
+            "downloadStarted": len(observed["download_started"]) >= 3,
             "downloadProgress": any(done == len(DOWNLOAD_PAYLOAD) and total == len(DOWNLOAD_PAYLOAD)
                                     for done, total in observed["download_progress"]),
-            "downloadFinished": len(observed["download_finished"]) == 2,
+            "downloadFinished": len(observed["download_finished"]) >= 2,
             "download contents": all(item[3] == DOWNLOAD_PAYLOAD for item in observed["download_finished"]),
-            "download filenames": [item[0] for item in observed["download_finished"]]
+            "download filenames": [item[0] for item in observed["download_finished"][:2]]
             == ["smoke-download (1).txt", "smoke-download (2).txt"],
-            "download source URL": all(item[2].endswith("/download") for item in observed["download_finished"]),
+            "download source URL": all(item[2].endswith("/download") for item in observed["download_finished"][:2]),
             "existing file preserved": (Path(download_temp.name) / "smoke-download.txt").read_bytes()
             == b"pre-existing\n",
             "download failure": bool(observed["download_failed"] and observed["download_failed"][-1][1]),
@@ -291,6 +333,18 @@ def main() -> int:
             "HTTP meaningful URLs": observed["http_results"].get("urls", False),
             "HTTP escaped error content": observed["http_results"].get("escaped", False),
             "HTTP recovery": observed["http_results"].get("recovery", False),
+            "popup source": observed["popup_results"].get("source", False),
+            "target blank same view": observed["popup_results"].get("target", False)
+            and "Popup target" in observed["titles"],
+            "popup Back": observed["popup_results"].get("back", False),
+            "popup Forward": observed["popup_results"].get("forward", False),
+            "window.open same view": observed["popup_results"].get("javascript", False)
+            and "Popup JavaScript" in observed["titles"],
+            "popup download": observed["popup_results"].get("download", False),
+            "popup HTTP error": observed["popup_results"].get("error", False),
+            "popup single error failure": observed["popup_error_failures"] == 1,
+            "popup no false error success": observed["popup_error_successes"] == 0,
+            "no secondary popup WebView": observed["popup_results"].get("same_view", False),
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -334,6 +388,15 @@ def main() -> int:
             web_view.setDownloadDirectory(str(invalid_directory))
             phase["value"] = "download_failure"
             QTimer.singleShot(100, trigger_download)
+        elif phase["value"] == "popup_download":
+            observed["popup_results"]["download"] = (
+                file_name == "popup-download.txt"
+                and contents == DOWNLOAD_PAYLOAD
+                and source_url.endswith("/popup-download")
+            )
+            web_view.setDownloadDirectory(str(Path(download_temp.name)))
+            phase["value"] = "popup_error"
+            QTimer.singleShot(200, lambda: web_view.evaluateJavaScript("document.getElementById('popup-error').click()"))
 
     def on_download_failed(path: str, error: str) -> None:
         observed["download_failed"].append((path, error))
@@ -411,6 +474,10 @@ def main() -> int:
     def start_http_error_smoke() -> None:
         phase["value"] = "http_200"
         web_view.setUrl(http_url("/http-ok"))
+
+    def start_popup_smoke() -> None:
+        phase["value"] = "popup_source"
+        web_view.setUrl(http_url("/popup-source"))
 
     def request_http_error_page(code: str) -> None:
         phase["value"] = f"http_{code}"
@@ -516,6 +583,17 @@ def main() -> int:
             else:
                 phase["value"] = "http_recovery"
                 QTimer.singleShot(200, lambda: web_view.setUrl(http_url("/http-ok?recovery")))
+        elif label == "popup_error_page":
+            text = result or ""
+            expected_url = http_url("/http-404?from=popup").toString()
+            observed["popup_results"]["error"] = (
+                "Page could not be loaded" in text
+                and "HTTP 404" in text
+                and expected_url in text
+                and web_view.url().toString() == expected_url
+            )
+            phase["value"] = "done"
+            QTimer.singleShot(300, finish_automated_smoke)
         required = {"number", "string", "boolean", "null", "error", "fire"}
         if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
             QTimer.singleShot(250, start_proxy_smoke)
@@ -528,6 +606,16 @@ def main() -> int:
         if not automated:
             return
         if not ok:
+            if phase["value"] == "popup_error":
+                observed["popup_error_failures"] += 1
+                QTimer.singleShot(
+                    350,
+                    lambda: evaluate(
+                        "popup_error_page",
+                        "document.title+'\\n'+document.body.textContent+'\\n'+location.href",
+                    ),
+                )
+                return
             if phase["value"] in ("http_404", "http_500", "http_403"):
                 code = phase["value"].split("_")[1]
                 observed["http_failures"][code] = observed["http_failures"].get(code, 0) + 1
@@ -535,7 +623,7 @@ def main() -> int:
                 return
             if phase["value"] == "failure":
                 QTimer.singleShot(100, start_javascript_smoke)
-            elif phase["value"] in ("download", "download_failure"):
+            elif phase["value"] in ("download", "download_failure", "popup_download"):
                 return
             else:
                 app.exit(1)
@@ -553,10 +641,41 @@ def main() -> int:
             QTimer.singleShot(150, lambda: request_http_error_page("404"))
         elif current_phase == "http_recovery":
             observed["http_results"]["recovery"] = web_view.url().toString() == http_url("/http-ok?recovery").toString()
-            phase["value"] = "done"
-            QTimer.singleShot(300, finish_automated_smoke)
+            QTimer.singleShot(200, start_popup_smoke)
         elif current_phase in ("http_404", "http_500", "http_403"):
             observed["http_successes_after_failure"] += 1
+        elif current_phase == "popup_source":
+            observed["popup_results"]["source"] = web_view.url().toString() == http_url("/popup-source").toString()
+            phase["value"] = "popup_blank"
+            QTimer.singleShot(150, lambda: web_view.evaluateJavaScript("document.getElementById('popup-link').click()"))
+        elif current_phase == "popup_blank":
+            observed["popup_results"]["target"] = web_view.url().toString() == http_url("/popup-target").toString()
+            observed["popup_results"]["same_view"] = observed["popup_results"]["target"]
+            phase["value"] = "popup_back"
+            QTimer.singleShot(150, web_view.back)
+        elif current_phase == "popup_back":
+            observed["popup_results"]["back"] = web_view.url().toString() == http_url("/popup-source").toString()
+            phase["value"] = "popup_forward"
+            QTimer.singleShot(150, web_view.forward)
+        elif current_phase == "popup_forward":
+            observed["popup_results"]["forward"] = web_view.url().toString() == http_url("/popup-target").toString()
+            phase["value"] = "popup_return_source"
+            QTimer.singleShot(150, web_view.back)
+        elif current_phase == "popup_return_source":
+            phase["value"] = "popup_javascript"
+            QTimer.singleShot(150, lambda: web_view.evaluateJavaScript("window.open('/popup-js', '_blank')"))
+        elif current_phase == "popup_javascript":
+            observed["popup_results"]["javascript"] = web_view.url().toString() == http_url("/popup-js").toString()
+            phase["value"] = "popup_javascript_back"
+            QTimer.singleShot(150, web_view.back)
+        elif current_phase == "popup_javascript_back":
+            web_view.setDownloadDirectory(str(Path(download_temp.name)))
+            phase["value"] = "popup_download"
+            QTimer.singleShot(
+                150, lambda: web_view.evaluateJavaScript("document.getElementById('popup-download').click()")
+            )
+        elif current_phase == "popup_error":
+            observed["popup_error_successes"] += 1
         elif current_phase == "proxy":
             observed["proxy_request"] = (
                 len(ProxyHandler.requests) == 1
