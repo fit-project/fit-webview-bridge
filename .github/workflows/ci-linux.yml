@@ -74,7 +74,7 @@ jobs:
             "shiboken6==${PYSIDE_VERSION}" \
             "shiboken6-generator==${PYSIDE_VERSION}" \
             "scikit-build-core>=0.9" \
-            aqtinstall auditwheel build
+            aqtinstall auditwheel build cmake ninja
           python --version
           python -c "import PySide6, shiboken6; print('PySide6', PySide6.__version__); print('shiboken6', shiboken6.__version__)"
 
