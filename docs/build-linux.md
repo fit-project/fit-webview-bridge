@@ -12,6 +12,17 @@ PySide6 dependency. A wheel consumer does not need CMake, Ninja, a compiler,
 the Shiboken generator, WebKitGTK development headers, or the separately
 installed Qt SDK used to build the wheel.
 
+The Linux CI workflow targets the GitHub-hosted Ubuntu 24.04 x86-64 runner and
+builds a CPython 3.11 `linux_x86_64` wheel. It verifies the wheel contents and
+relative ELF RUNPATH, installs it into an isolated virtual environment outside
+the checkout, checks native dependency resolution, and runs a deterministic
+X11 smoke test under Xvfb. The workflow uses `auditwheel show` for diagnostics
+only: it does not run `auditwheel repair` or bundle the system web engine.
+Because this first CI job builds and tests on the same runner, its clean Python
+environment proves wheel isolation but the runner still has development apt
+packages installed. A later runtime-only image/job must establish the strictly
+minimal Ubuntu consumer package set.
+
 ## Ubuntu dependencies
 
 Install the WebKitGTK/GTK development packages and the runtime libraries used
