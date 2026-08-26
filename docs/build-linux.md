@@ -88,6 +88,32 @@ QT_QPA_PLATFORM=xcb \
 ./.venv311/bin/python examples/linux/webkitgtk_ephemeral_smoke.py
 ```
 
+The X11 focus/input smoke is intentionally manual because Qt synthetic input
+does not reliably reproduce keyboard and mouse events delivered directly to a
+foreign GTK X11 window:
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+QT_QPA_PLATFORM=xcb \
+./.venv311/bin/python examples/linux/webkitgtk_focus_input_smoke.py
+```
+
+The Linux bridge gives both `SystemWebViewWidget` and its foreign-window
+container a strong Qt focus policy. Entering the wrapper explicitly focuses the
+native WebKitGTK widget. The bridge does not synthesize key events, forward
+WebKit editing commands, or install process-global X11 hooks. Attempting to
+mirror a native GTK click back into Qt with `QWidget::setFocus()` steals X11
+keyboard focus from the foreign window, so Qt's logical `focusWidget()` may be
+empty while WebKitGTK owns native keyboard focus. Use the manual smoke test to
+verify native printable-key and editing-shortcut behavior in the target X11
+environment.
+
+Use the smoke page to verify text input, textarea, contenteditable, clipboard
+shortcuts, internal Tab/Shift+Tab traversal, native context-menu focus recovery,
+and both Qt/WebKit Tab boundaries. Those interaction results remain
+manual/window-manager-specific; they are not asserted by the automated smoke
+suite.
+
 `Could NOT find WrapVulkanHeaders` is a non-fatal Qt diagnostic for this build.
 
 ## Linux API notes

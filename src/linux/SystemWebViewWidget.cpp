@@ -502,6 +502,7 @@ struct SystemWebViewWidget::Impl {
 
 SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
     d->owner = this;
+    setFocusPolicy(Qt::StrongFocus);
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -805,7 +806,10 @@ void SystemWebViewWidget::resizeEvent(QResizeEvent* event) {
 void SystemWebViewWidget::focusInEvent(QFocusEvent* event) {
     QWidget::focusInEvent(event);
     if (d->container != nullptr) {
-        d->container->setFocus(Qt::OtherFocusReason);
+        d->container->setFocus(event->reason());
+    }
+    if (d->available && !gtk_widget_has_focus(d->webView)) {
+        gtk_widget_grab_focus(d->webView);
     }
 }
 
