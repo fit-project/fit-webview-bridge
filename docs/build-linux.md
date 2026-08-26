@@ -114,6 +114,29 @@ and both Qt/WebKit Tab boundaries. Those interaction results remain
 manual/window-manager-specific; they are not asserted by the automated smoke
 suite.
 
+HTML5 fullscreen is supported on Linux/X11. WebKitGTK fullscreen permission is
+granted for the generic fullscreen request, and `enter-fullscreen` /
+`leave-fullscreen` are coordinated with the real Qt top-level instead of trying
+to fullscreen the embedded `GtkPlug`. The bridge saves the prior Qt window
+state, temporarily hides visible Qt siblings around the web view, and restores
+both state and visibility on exit or widget destruction.
+
+Run the deterministic fullscreen page with:
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+QT_QPA_PLATFORM=xcb \
+./.venv311/bin/python examples/linux/webkitgtk_fullscreen_smoke.py
+```
+
+The smoke test verified arbitrary-element DOM fullscreen, `fullscreenchange`,
+Escape exit, two sequential cycles, non-zero embedded geometry, and restoration
+from normal and maximized states. In the tested VMware/X11 environment, typing
+in an HTML editor causes WebKitGTK to leave DOM fullscreen even when the editor
+was focused as part of the fullscreen request. Normal editing outside
+fullscreen is unaffected. Local video fullscreen and other X11 window managers
+remain manual verification items; Wayland is not supported.
+
 `Could NOT find WrapVulkanHeaders` is a non-fatal Qt diagnostic for this build.
 
 ## Linux API notes

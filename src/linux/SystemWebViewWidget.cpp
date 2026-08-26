@@ -272,6 +272,10 @@ struct SystemWebViewWidget::Impl {
     WebKitWebsiteDataManager* websiteDataManager = nullptr;
     gulong downloadStartedHandler = 0;
     QHash<WebKitDownload*, DownloadState*> downloads;
+    QPointer<QWidget> fullscreenWindow;
+    Qt::WindowStates preFullscreenWindowState;
+    QList<QPointer<QWidget>> hiddenFullscreenSiblings;
+    bool htmlFullscreen = false;
 
     WebKitWebView* nativeWebView() const { return WEBKIT_WEB_VIEW(webView); }
 
@@ -498,6 +502,61 @@ struct SystemWebViewWidget::Impl {
             emit owner->canGoForwardChanged(forward);
         }
     }
+
+    void enterFullscreen() {
+        if (htmlFullscreen || owner == nullptr) {
+            return;
+        }
+        QWidget* topLevel = owner->window();
+        if (topLevel == nullptr) {
+            return;
+        }
+
+        fullscreenWindow = topLevel;
+        preFullscreenWindowState = topLevel->windowState();
+        hiddenFullscreenSiblings.clear();
+        QWidget* pathWidget = owner;
+        while (QWidget* parent = pathWidget->parentWidget()) {
+            const auto siblings = parent->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+            for (QWidget* sibling : siblings) {
+                if (sibling != pathWidget && sibling->isVisible() && !sibling->isWindow()) {
+                    hiddenFullscreenSiblings.append(sibling);
+                    sibling->hide();
+                }
+            }
+            pathWidget = parent;
+            if (parent == topLevel) {
+                break;
+            }
+        }
+        htmlFullscreen = true;
+        topLevel->showFullScreen();
+        QTimer::singleShot(0, owner, [guard = QPointer<SystemWebViewWidget>(owner)] {
+            if (!guard.isNull() && guard->d->available && !gtk_widget_has_focus(guard->d->webView)) {
+                gtk_widget_grab_focus(guard->d->webView);
+            }
+        });
+    }
+
+    void leaveFullscreen() {
+        if (!htmlFullscreen) {
+            return;
+        }
+        htmlFullscreen = false;
+        if (!fullscreenWindow.isNull()) {
+            fullscreenWindow->setWindowState(preFullscreenWindowState);
+        }
+        for (const QPointer<QWidget>& sibling : std::as_const(hiddenFullscreenSiblings)) {
+            if (!sibling.isNull()) {
+                sibling->show();
+            }
+        }
+        hiddenFullscreenSiblings.clear();
+        fullscreenWindow.clear();
+        if (owner != nullptr && available && !gtk_widget_has_focus(webView)) {
+            gtk_widget_grab_focus(webView);
+        }
+    }
 };
 
 SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(new Impl) {
@@ -532,6 +591,8 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         return;
     }
     d->webView = webkit_web_view_new_with_context(d->webContext);
+    WebKitSettings* settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(d->webView));
+    webkit_settings_set_enable_fullscreen(settings, TRUE);
     d->downloadStartedHandler = g_signal_connect(
         d->webContext, "download-started", G_CALLBACK(Impl::contextDownloadStarted), d);
     gtk_container_add(GTK_CONTAINER(d->plug), d->webView);
@@ -552,6 +613,33 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
     d->container->setFocusPolicy(Qt::StrongFocus);
     layout->addWidget(d->container);
 
+    g_signal_connect(
+        d->webView,
+        "permission-request",
+        G_CALLBACK(+[](WebKitWebView*, WebKitPermissionRequest* request, gpointer) -> gboolean {
+            if (request == nullptr || g_strcmp0(G_OBJECT_TYPE_NAME(request), "WebKitPermissionRequest") != 0) {
+                return FALSE;
+            }
+            webkit_permission_request_allow(request);
+            return TRUE;
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
+        "enter-fullscreen",
+        G_CALLBACK(+[](WebKitWebView*, gpointer data) -> gboolean {
+            static_cast<SystemWebViewWidget*>(data)->d->enterFullscreen();
+            return TRUE;
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
+        "leave-fullscreen",
+        G_CALLBACK(+[](WebKitWebView*, gpointer data) -> gboolean {
+            static_cast<SystemWebViewWidget*>(data)->d->leaveFullscreen();
+            return TRUE;
+        }),
+        this);
     g_signal_connect(
         d->webView,
         "create",
@@ -749,6 +837,7 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
 }
 
 SystemWebViewWidget::~SystemWebViewWidget() {
+    d->leaveFullscreen();
     if (d->glibPump != nullptr) {
         d->glibPump->stop();
     }
