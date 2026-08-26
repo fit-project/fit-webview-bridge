@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QImageReader
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 from fit_webview_bridge import systemwebview
@@ -133,6 +134,9 @@ def main() -> int:
         "proxy_request": False,
         "proxy_cleared": False,
         "proxy_storage_preserved": False,
+        "capture_tokens": [],
+        "capture_results": {},
+        "capture_completions": [],
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -222,6 +226,18 @@ def main() -> int:
             "HTTP request through proxy": observed["proxy_request"],
             "clearProxy bypassed explicit proxy": observed["proxy_cleared"],
             "clearProxy preserved storage": observed["proxy_storage_preserved"],
+            "capture tokens": len(observed["capture_tokens"]) == 3
+            and all(observed["capture_tokens"])
+            and len(set(observed["capture_tokens"])) == 3,
+            "capture completion tokens": set(observed["capture_completions"])
+            == set(observed["capture_tokens"]),
+            "single capture completion": len(observed["capture_completions"])
+            == len(set(observed["capture_completions"])),
+            "PNG capture": observed["capture_results"].get("png", {}).get("valid", False),
+            "JPEG capture": observed["capture_results"].get("jpeg", {}).get("valid", False),
+            "visible viewport capture": observed["capture_results"].get("png", {}).get("visible", False)
+            and observed["capture_results"].get("jpeg", {}).get("visible", False),
+            "capture failure": observed["capture_results"].get("invalid", {}).get("failed", False),
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -270,13 +286,70 @@ def main() -> int:
         observed["download_failed"].append((path, error))
         print(f"downloadFailed: path={path!r}, error={error!r}", flush=True)
         if phase["value"] == "download_failure":
-            phase["value"] = "done"
-            QTimer.singleShot(250, finish_automated_smoke)
+            QTimer.singleShot(250, start_capture_smoke)
 
     web_view.downloadStarted.connect(on_download_started)
     web_view.downloadProgress.connect(on_download_progress)
     web_view.downloadFinished.connect(on_download_finished)
     web_view.downloadFailed.connect(on_download_failed)
+
+    capture_directory = Path(download_temp.name) / "captures" if automated else None
+    capture_paths = {
+        "png": capture_directory / "nested" / "visible.PNG" if automated else None,
+        "jpeg": capture_directory / "nested" / "visible.JpEg" if automated else None,
+        "invalid": capture_directory / "invalid-target" if automated else None,
+    }
+
+    def start_capture_smoke() -> None:
+        phase["value"] = "capture_load"
+        tall_html = (
+            "<!doctype html><html><head><title>Capture viewport</title></head>"
+            "<body style='margin:0;background:#234;color:white'>"
+            "<div style='height:4000px;padding:24px'>VISIBLE CAPTURE MARKER</div></body></html>"
+        )
+        web_view.setUrl(QUrl(f"data:text/html;charset=utf-8,{quote(tall_html)}"))
+
+    def request_captures() -> None:
+        capture_paths["invalid"].mkdir(parents=True)
+        for label in ("png", "jpeg", "invalid"):
+            token = web_view.captureVisiblePage(str(capture_paths[label]))
+            observed["capture_tokens"].append(token)
+            print(f"captureVisiblePage: label={label}, token={token}, path={capture_paths[label]}", flush=True)
+
+    def on_capture_finished(token: int, success: bool, file_path: str, error: str) -> None:
+        observed["capture_completions"].append(token)
+        path = Path(file_path)
+        label = next((name for name, expected in capture_paths.items() if expected == path), "unknown")
+        print(
+            f"captureFinished: token={token}, label={label}, success={success}, path={file_path!r}, error={error!r}",
+            flush=True,
+        )
+        if success:
+            reader = QImageReader(str(path))
+            image_format = bytes(reader.format()).lower()
+            size = reader.size()
+            data = path.read_bytes()
+            expected_format = b"png" if label == "png" else b"jpeg"
+            valid_magic = data.startswith(b"\x89PNG\r\n\x1a\n") if label == "png" else data.startswith(b"\xff\xd8")
+            expected_height = web_view.height()
+            visible = 100 < size.height() < 4000 and abs(size.height() - expected_height) <= 20
+            observed["capture_results"][label] = {
+                "valid": path.is_file()
+                and path.stat().st_size > 0
+                and image_format == expected_format
+                and valid_magic,
+                "visible": visible,
+                "size": (size.width(), size.height()),
+            }
+        else:
+            observed["capture_results"][label] = {
+                "failed": label == "invalid" and bool(error) and file_path == str(capture_paths["invalid"])
+            }
+        if len(observed["capture_completions"]) == 3:
+            phase["value"] = "done"
+            QTimer.singleShot(250, finish_automated_smoke)
+
+    web_view.captureFinished.connect(on_capture_finished)
 
     javascript_requests = {}
 
@@ -382,6 +455,9 @@ def main() -> int:
                 and any(path.startswith("/proxy-page?after-clear") for path in DownloadHandler.direct_requests)
             )
             evaluate("proxy_storage", "localStorage.getItem('fitProxyPreserved')")
+        elif current_phase == "capture_load":
+            phase["value"] = "capture"
+            QTimer.singleShot(250, request_captures)
         elif current_phase == "first":
             phase["value"] = "second"
             QTimer.singleShot(100, lambda: web_view.setUrl(second_url))

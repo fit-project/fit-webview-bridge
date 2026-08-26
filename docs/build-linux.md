@@ -71,7 +71,8 @@ QT_QPA_PLATFORM=xcb \
 ```
 
 For the self-checking smoke workflow, including navigation, JavaScript,
-User-Agent, data clearing, and downloads served by a local HTTP server, run:
+User-Agent, data clearing, downloads, proxy configuration, and visible-page
+capture, run:
 
 ```bash
 PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
@@ -117,3 +118,10 @@ widget construction. Repeated calls replace the previous configuration.
 `clearProxy()` restores WebKitGTK's default/system proxy mode for that widget's
 data manager. It does not clear cookies, storage, website data, or cache; the
 automated smoke test verifies preservation of local storage across the reset.
+
+`captureVisiblePage()` asynchronously captures only the currently visible
+WebKitGTK viewport. A `.jpg` or `.jpeg` suffix selects JPEG output; every other
+suffix uses PNG. Missing parent directories are created automatically, and the
+result is reported through `captureFinished()` with the token returned by the
+method. Full-page capture and capture while the native view is unrealized are
+not supported in this milestone.

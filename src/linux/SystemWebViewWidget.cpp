@@ -30,17 +30,25 @@
 #endif
 #include <gtk/gtk.h>
 #include <gtk/gtkx.h>
+#include <gdk/gdkpixbuf.h>
 #include <webkit2/webkit2.h>
 
 namespace {
 
 constexpr auto unsupportedMessage = "Not implemented by the Linux WebKitGTK proof of concept";
 std::atomic<quint64> jsToken{0};
+std::atomic<quint64> captureToken{0};
 
 struct JavaScriptRequest {
     QPointer<SystemWebViewWidget> owner;
     quint64 token = 0;
     bool emitResult = false;
+};
+
+struct CaptureRequest {
+    QPointer<SystemWebViewWidget> owner;
+    quint64 token = 0;
+    QString filePath;
 };
 
 void warnUnsupported(const char* method) {
@@ -138,6 +146,64 @@ void websiteDataCleared(GObject* source, GAsyncResult* result, gpointer) {
     }
     if (error != nullptr) {
         g_error_free(error);
+    }
+}
+
+void snapshotFinished(GObject* source, GAsyncResult* result, gpointer userData) {
+    std::unique_ptr<CaptureRequest> request(static_cast<CaptureRequest*>(userData));
+    GError* snapshotError = nullptr;
+    cairo_surface_t* surface = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(source), result, &snapshotError);
+    bool success = false;
+    QString errorText;
+
+    if (surface == nullptr) {
+        errorText = snapshotError != nullptr ? QString::fromUtf8(snapshotError->message)
+                                             : QStringLiteral("WebKitGTK snapshot failed");
+    } else if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+        errorText = QStringLiteral("Invalid Cairo snapshot surface: %1")
+                        .arg(QString::fromLatin1(cairo_status_to_string(cairo_surface_status(surface))));
+    } else if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE) {
+        errorText = QStringLiteral("Unsupported Cairo snapshot surface type");
+    } else {
+        const QByteArray outputPath = request->filePath.toUtf8();
+        const QString extension = QFileInfo(request->filePath).suffix().toLower();
+        if (extension == QStringLiteral("jpg") || extension == QStringLiteral("jpeg")) {
+            const int width = cairo_image_surface_get_width(surface);
+            const int height = cairo_image_surface_get_height(surface);
+            GdkPixbuf* pixbuf = gdk_pixbuf_get_from_surface(surface, 0, 0, width, height);
+            if (pixbuf == nullptr) {
+                errorText = QStringLiteral("Cannot convert snapshot to JPEG pixels");
+            } else {
+                GError* encodeError = nullptr;
+                success = gdk_pixbuf_save(
+                    pixbuf, outputPath.constData(), "jpeg", &encodeError, "quality", "95", nullptr);
+                if (!success) {
+                    errorText = encodeError != nullptr ? QString::fromUtf8(encodeError->message)
+                                                       : QStringLiteral("JPEG encoding failed");
+                }
+                if (encodeError != nullptr) {
+                    g_error_free(encodeError);
+                }
+                g_object_unref(pixbuf);
+            }
+        } else {
+            const cairo_status_t status = cairo_surface_write_to_png(surface, outputPath.constData());
+            success = status == CAIRO_STATUS_SUCCESS;
+            if (!success) {
+                errorText = QStringLiteral("PNG encoding failed: %1")
+                                .arg(QString::fromLatin1(cairo_status_to_string(status)));
+            }
+        }
+    }
+
+    if (surface != nullptr) {
+        cairo_surface_destroy(surface);
+    }
+    if (snapshotError != nullptr) {
+        g_error_free(snapshotError);
+    }
+    if (!request->owner.isNull()) {
+        emit request->owner->captureFinished(request->token, success, request->filePath, errorText);
     }
 }
 
@@ -737,11 +803,70 @@ void SystemWebViewWidget::setApplicationNameForUserAgent(const QString& name) {
     applyUserAgent();
 }
 quint64 SystemWebViewWidget::captureVisiblePage(const QString& filePath) {
-    warnUnsupported("captureVisiblePage()");
-    emit captureFinished(0, false, filePath, QString::fromLatin1(unsupportedMessage));
-    return 0;
+    quint64 token = ++captureToken;
+    if (token == 0) {
+        token = ++captureToken;
+    }
+    if (QThread::currentThread() == thread()) {
+        return _captureVisiblePage_onGui(filePath, token);
+    }
+
+    const QPointer<SystemWebViewWidget> guard(this);
+    QMetaObject::invokeMethod(
+        this,
+        [guard, filePath, token] {
+            if (!guard.isNull()) {
+                guard->_captureVisiblePage_onGui(filePath, token);
+            }
+        },
+        Qt::QueuedConnection);
+    return token;
 }
-quint64 SystemWebViewWidget::_captureVisiblePage_onGui(const QString&, quint64) { return 0; }
+quint64 SystemWebViewWidget::_captureVisiblePage_onGui(const QString& requestedPath, quint64 token) {
+    const QString outputPath = requestedPath.trimmed();
+    auto fail = [this, token, &requestedPath](const QString& error) {
+        emit captureFinished(token, false, requestedPath, error);
+        return token;
+    };
+
+    if (!d->available || d->webView == nullptr) {
+        return fail(QStringLiteral("WebView is not available"));
+    }
+    if (outputPath.isEmpty()) {
+        return fail(QStringLiteral("Empty output path"));
+    }
+
+    const QFileInfo outputInfo(outputPath);
+    if (outputInfo.fileName().isEmpty() || outputInfo.isDir()) {
+        return fail(QStringLiteral("Output path does not name a writable file"));
+    }
+    QDir parentDirectory = outputInfo.absoluteDir();
+    if (!parentDirectory.exists() && !QDir().mkpath(parentDirectory.absolutePath())) {
+        return fail(QStringLiteral("Cannot create capture directory: %1").arg(parentDirectory.absolutePath()));
+    }
+    const QFileInfo parentInfo(parentDirectory.absolutePath());
+    if (!parentInfo.isDir() || !parentInfo.isWritable()) {
+        return fail(QStringLiteral("Capture directory is not writable: %1").arg(parentDirectory.absolutePath()));
+    }
+    if (!gtk_widget_get_realized(d->webView)) {
+        return fail(QStringLiteral("WebView is not realized"));
+    }
+    GtkAllocation allocation;
+    gtk_widget_get_allocation(d->webView, &allocation);
+    if (allocation.width <= 0 || allocation.height <= 0) {
+        return fail(QStringLiteral("WebView has no visible viewport"));
+    }
+
+    auto* request = new CaptureRequest{QPointer<SystemWebViewWidget>(this), token, outputPath};
+    webkit_web_view_get_snapshot(
+        d->nativeWebView(),
+        WEBKIT_SNAPSHOT_REGION_VISIBLE,
+        WEBKIT_SNAPSHOT_OPTIONS_NONE,
+        nullptr,
+        snapshotFinished,
+        request);
+    return token;
+}
 void SystemWebViewWidget::applyUserAgent() {
     if (!d->available) {
         return;
