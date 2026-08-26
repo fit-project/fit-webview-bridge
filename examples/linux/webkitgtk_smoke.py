@@ -19,6 +19,43 @@ class DownloadHandler(BaseHTTPRequestHandler):
     direct_requests = []
 
     def do_GET(self) -> None:
+        if self.path.startswith("/http-ok"):
+            payload = b"<!doctype html><html><head><title>HTTP smoke OK</title></head><body>HTTP OK</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/http-redirect":
+            self.send_response(302)
+            self.send_header("Location", "/http-ok?redirected")
+            self.end_headers()
+            return
+        if self.path.startswith("/http-404"):
+            payload = b"<!doctype html><title>REMOTE ERROR BODY</title><p>REMOTE 404 MUST NOT BE SHOWN</p>"
+            self.send_response(404, "Not Found <remote>")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/http-500":
+            payload = b"<!doctype html><title>REMOTE ERROR BODY</title><p>REMOTE 500 MUST NOT BE SHOWN</p>"
+            self.send_response(500)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/http-403":
+            payload = b"<!doctype html><title>REMOTE ERROR BODY</title><p>REMOTE 403 MUST NOT BE SHOWN</p>"
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path.startswith("/proxy-page"):
             self.__class__.direct_requests.append(self.path)
             payload = b"<!doctype html><html><head><title>Direct origin</title></head><body>direct</body></html>"
@@ -137,6 +174,10 @@ def main() -> int:
         "capture_tokens": [],
         "capture_results": {},
         "capture_completions": [],
+        "navigation_display_urls": [],
+        "http_results": {},
+        "http_failures": {},
+        "http_successes_after_failure": 0,
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -164,9 +205,11 @@ def main() -> int:
         print(f"canGoForwardChanged: {available}", flush=True)
 
     web_view.urlChanged.connect(on_url_changed)
-    web_view.navigationDisplayUrlChanged.connect(
-        lambda url: print(f"navigationDisplayUrlChanged: {url.toString()}", flush=True)
-    )
+    def on_navigation_display_url_changed(url: QUrl) -> None:
+        observed["navigation_display_urls"].append(url.toString())
+        print(f"navigationDisplayUrlChanged: {url.toString()}", flush=True)
+
+    web_view.navigationDisplayUrlChanged.connect(on_navigation_display_url_changed)
     web_view.titleChanged.connect(on_title_changed)
     web_view.loadProgress.connect(on_progress_changed)
     web_view.canGoBackChanged.connect(on_back_changed)
@@ -238,6 +281,16 @@ def main() -> int:
             "visible viewport capture": observed["capture_results"].get("png", {}).get("visible", False)
             and observed["capture_results"].get("jpeg", {}).get("visible", False),
             "capture failure": observed["capture_results"].get("invalid", {}).get("failed", False),
+            "HTTP 200": observed["http_results"].get("200", False),
+            "HTTP redirect": observed["http_results"].get("redirect", False),
+            "HTTP 404 error page": observed["http_results"].get("404", False),
+            "HTTP 500 error page": observed["http_results"].get("500", False),
+            "HTTP 403 error page": observed["http_results"].get("403", False),
+            "HTTP single failure signals": all(observed["http_failures"].get(code) == 1 for code in ("404", "500", "403")),
+            "HTTP no false success": observed["http_successes_after_failure"] == 0,
+            "HTTP meaningful URLs": observed["http_results"].get("urls", False),
+            "HTTP escaped error content": observed["http_results"].get("escaped", False),
+            "HTTP recovery": observed["http_results"].get("recovery", False),
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -346,12 +399,27 @@ def main() -> int:
                 "failed": label == "invalid" and bool(error) and file_path == str(capture_paths["invalid"])
             }
         if len(observed["capture_completions"]) == 3:
-            phase["value"] = "done"
-            QTimer.singleShot(250, finish_automated_smoke)
+            QTimer.singleShot(250, start_http_error_smoke)
 
     web_view.captureFinished.connect(on_capture_finished)
 
     javascript_requests = {}
+
+    def http_url(path: str) -> QUrl:
+        return QUrl(f"http://127.0.0.1:{download_server.server_address[1]}{path}")
+
+    def start_http_error_smoke() -> None:
+        phase["value"] = "http_200"
+        web_view.setUrl(http_url("/http-ok"))
+
+    def request_http_error_page(code: str) -> None:
+        phase["value"] = f"http_{code}"
+        path = "/http-404?unsafe=%3Cfit-unsafe%3E&quote=%22value%22" if code == "404" else f"/http-{code}"
+        web_view.setUrl(http_url(path))
+
+    def inspect_http_error_page(code: str) -> None:
+        script = "document.title+'\\n'+document.body.textContent+'\\n'+document.body.innerHTML+'\\n'+location.href"
+        evaluate(f"http_error_{code}", script)
 
     def proxy_page_url(query: str) -> QUrl:
         port = download_server.server_address[1]
@@ -418,6 +486,36 @@ def main() -> int:
         elif label == "proxy_storage":
             observed["proxy_storage_preserved"] = result == "yes" and not error
             QTimer.singleShot(100, start_download_smoke)
+        elif label and label.startswith("http_error_"):
+            code = label.rsplit("_", 1)[1]
+            text = result or ""
+            parts = text.split("\n", 3)
+            title, body_text, body_html, location = parts if len(parts) == 4 else ("", "", "", "")
+            expected_url = http_url(
+                "/http-404?unsafe=%3Cfit-unsafe%3E&quote=%22value%22" if code == "404" else f"/http-{code}"
+            ).toString()
+            correct_page = (
+                title == "Page could not be loaded"
+                and f"HTTP {code}" in body_text
+                and expected_url in body_text
+                and "REMOTE ERROR BODY" not in text
+            )
+            observed["http_results"][code] = correct_page
+            if code == "404":
+                observed["http_results"]["escaped"] = (
+                    "<fit-unsafe>" not in body_html and "&amp;" in body_html
+                )
+            observed["http_results"]["urls"] = observed["http_results"].get("urls", True) and (
+                web_view.url().toString() == expected_url
+                and observed["navigation_display_urls"][-1] == expected_url
+                and location == expected_url
+            )
+            next_code = {"404": "500", "500": "403"}.get(code)
+            if next_code:
+                QTimer.singleShot(200, lambda value=next_code: request_http_error_page(value))
+            else:
+                phase["value"] = "http_recovery"
+                QTimer.singleShot(200, lambda: web_view.setUrl(http_url("/http-ok?recovery")))
         required = {"number", "string", "boolean", "null", "error", "fire"}
         if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
             QTimer.singleShot(250, start_proxy_smoke)
@@ -430,6 +528,11 @@ def main() -> int:
         if not automated:
             return
         if not ok:
+            if phase["value"] in ("http_404", "http_500", "http_403"):
+                code = phase["value"].split("_")[1]
+                observed["http_failures"][code] = observed["http_failures"].get(code, 0) + 1
+                QTimer.singleShot(350, lambda value=code: inspect_http_error_page(value))
+                return
             if phase["value"] == "failure":
                 QTimer.singleShot(100, start_javascript_smoke)
             elif phase["value"] in ("download", "download_failure"):
@@ -439,7 +542,22 @@ def main() -> int:
             return
 
         current_phase = phase["value"]
-        if current_phase == "proxy":
+        if current_phase == "http_200":
+            observed["http_results"]["200"] = web_view.url().toString() == http_url("/http-ok").toString()
+            phase["value"] = "http_redirect"
+            QTimer.singleShot(150, lambda: web_view.setUrl(http_url("/http-redirect")))
+        elif current_phase == "http_redirect":
+            observed["http_results"]["redirect"] = (
+                web_view.url().toString() == http_url("/http-ok?redirected").toString()
+            )
+            QTimer.singleShot(150, lambda: request_http_error_page("404"))
+        elif current_phase == "http_recovery":
+            observed["http_results"]["recovery"] = web_view.url().toString() == http_url("/http-ok?recovery").toString()
+            phase["value"] = "done"
+            QTimer.singleShot(300, finish_automated_smoke)
+        elif current_phase in ("http_404", "http_500", "http_403"):
+            observed["http_successes_after_failure"] += 1
+        elif current_phase == "proxy":
             observed["proxy_request"] = (
                 len(ProxyHandler.requests) == 1
                 and ProxyHandler.requests[0][0] == "second"

@@ -72,7 +72,7 @@ QT_QPA_PLATFORM=xcb \
 
 For the self-checking smoke workflow, including navigation, JavaScript,
 User-Agent, data clearing, downloads, proxy configuration, and visible-page
-capture, run:
+capture, plus custom HTTP error pages, run:
 
 ```bash
 PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
@@ -125,3 +125,13 @@ suffix uses PNG. Missing parent directories are created automatically, and the
 result is reported through `captureFinished()` with the token returned by the
 method. Full-page capture and capture while the native view is unrealized are
 not supported in this milestone.
+
+For main-frame HTTP responses with status 400 or greater, the Linux backend
+replaces the remote response body with a deterministic internal error page. It
+shows the original URL and status code, while `url()` and
+`navigationDisplayUrlChanged()` continue to expose that original URL. Dynamic
+text is HTML-escaped and the internal page has no external resources.
+`loadFinished(false)` is emitted once for the failed response; loading the
+internal page does not emit a later `loadFinished(true)`. Redirects, successful
+responses, attachments, and unsupported MIME types intended for download are
+not classified as HTTP error pages.

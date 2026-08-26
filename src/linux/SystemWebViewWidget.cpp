@@ -229,6 +229,10 @@ struct SystemWebViewWidget::Impl {
     QString currentTitle;
     int currentProgress = -1;
     bool loadFailed = false;
+    bool httpErrorPending = false;
+    bool internalErrorPageLoading = false;
+    bool internalErrorPageCommitted = false;
+    QUrl internalErrorUrl;
     bool canGoBack = false;
     bool canGoForward = false;
     bool available = false;
@@ -419,7 +423,8 @@ struct SystemWebViewWidget::Impl {
 
     void updateUrl() {
         const char* uri = webkit_web_view_get_uri(nativeWebView());
-        const QUrl url = uri != nullptr ? QUrl(QString::fromUtf8(uri)) : QUrl();
+        const QUrl url = internalErrorPageLoading ? internalErrorUrl
+                                                  : (uri != nullptr ? QUrl(QString::fromUtf8(uri)) : QUrl());
         if (currentUrl == url) {
             return;
         }
@@ -508,6 +513,71 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
 
     g_signal_connect(
         d->webView,
+        "decide-policy",
+        G_CALLBACK(+[](WebKitWebView*, WebKitPolicyDecision* decision, WebKitPolicyDecisionType type,
+                       gpointer data) -> gboolean {
+            if (type != WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
+                return FALSE;
+            }
+
+            auto* self = static_cast<SystemWebViewWidget*>(data);
+            auto* responseDecision = WEBKIT_RESPONSE_POLICY_DECISION(decision);
+            if (!webkit_response_policy_decision_is_main_frame_main_resource(responseDecision)) {
+                return FALSE;
+            }
+
+            WebKitURIResponse* response = webkit_response_policy_decision_get_response(responseDecision);
+            if (response == nullptr) {
+                return FALSE;
+            }
+            SoupMessageHeaders* headers = webkit_uri_response_get_http_headers(response);
+            const char* disposition = headers != nullptr ? soup_message_headers_get_one(headers, "Content-Disposition")
+                                                         : nullptr;
+            const bool isAttachment = disposition != nullptr
+                && QString::fromUtf8(disposition).contains(QStringLiteral("attachment"), Qt::CaseInsensitive);
+            const bool isDownload = isAttachment
+                || !webkit_response_policy_decision_is_mime_type_supported(responseDecision);
+            const guint status = webkit_uri_response_get_status_code(response);
+            if (status < 400 || isDownload) {
+                return FALSE;
+            }
+            if (self->d->httpErrorPending || self->d->internalErrorPageLoading) {
+                webkit_policy_decision_ignore(decision);
+                return TRUE;
+            }
+
+            const char* responseUri = webkit_uri_response_get_uri(response);
+            const QUrl url = responseUri != nullptr ? QUrl(QString::fromUtf8(responseUri)) : self->d->currentUrl;
+            self->d->httpErrorPending = true;
+            self->d->internalErrorUrl = url;
+            self->d->loadFailed = true;
+            if (self->d->currentUrl != url) {
+                self->d->currentUrl = url;
+                emit self->urlChanged(url);
+            }
+            if (self->d->navigationDisplayUrl != url) {
+                self->d->navigationDisplayUrl = url;
+                emit self->navigationDisplayUrlChanged(url);
+            }
+            if (self->d->currentProgress != 0) {
+                self->d->currentProgress = 0;
+                emit self->loadProgress(0);
+            }
+            emit self->loadFinished(false);
+
+            webkit_policy_decision_ignore(decision);
+            const QPointer<SystemWebViewWidget> guard(self);
+            QTimer::singleShot(0, self, [guard, url, status] {
+                if (!guard.isNull() && guard->d->httpErrorPending && guard->d->internalErrorUrl == url) {
+                    guard->renderErrorPage(
+                        url, QStringLiteral("The server returned an HTTP error response."), static_cast<int>(status));
+                }
+            });
+            return TRUE;
+        }),
+        this);
+    g_signal_connect(
+        d->webView,
         "notify::uri",
         G_CALLBACK(+[](WebKitWebView*, GParamSpec*, gpointer data) {
             static_cast<SystemWebViewWidget*>(data)->d->updateUrl();
@@ -533,9 +603,14 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent event, gpointer data) {
             auto* self = static_cast<SystemWebViewWidget*>(data);
             if (event == WEBKIT_LOAD_STARTED) {
-                self->d->loadFailed = false;
+                if (!self->d->httpErrorPending && !self->d->internalErrorPageLoading) {
+                    self->d->loadFailed = false;
+                }
                 self->d->updateProgress();
             } else if (event == WEBKIT_LOAD_COMMITTED) {
+                if (self->d->internalErrorPageLoading) {
+                    self->d->internalErrorPageCommitted = true;
+                }
                 self->d->updateUrl();
                 self->d->updateNavigationDisplayUrl();
             } else if (event == WEBKIT_LOAD_FINISHED) {
@@ -550,6 +625,10 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
                     }
                     emit self->loadFinished(true);
                 }
+                if (self->d->internalErrorPageLoading && self->d->internalErrorPageCommitted) {
+                    self->d->internalErrorPageLoading = false;
+                    self->d->internalErrorPageCommitted = false;
+                }
             }
         }),
         this);
@@ -558,6 +637,9 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         "load-failed",
         G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char*, GError*, gpointer data) -> gboolean {
             auto* self = static_cast<SystemWebViewWidget*>(data);
+            if (self->d->httpErrorPending || self->d->internalErrorPageLoading) {
+                return TRUE;
+            }
             self->d->loadFailed = true;
             if (self->d->currentProgress != 0) {
                 self->d->currentProgress = 0;
@@ -629,6 +711,10 @@ void SystemWebViewWidget::setUrl(const QUrl& url) {
         }
         return;
     }
+    d->httpErrorPending = false;
+    d->internalErrorPageLoading = false;
+    d->internalErrorPageCommitted = false;
+    d->internalErrorUrl = QUrl();
     webkit_web_view_load_uri(WEBKIT_WEB_VIEW(d->webView), url.toString().toUtf8().constData());
 }
 
@@ -657,11 +743,17 @@ void SystemWebViewWidget::keyPressEvent(QKeyEvent* event) {
 
 void SystemWebViewWidget::back() {
     if (d->available && webkit_web_view_can_go_back(d->nativeWebView())) {
+        d->httpErrorPending = false;
+        d->internalErrorPageLoading = false;
+        d->internalErrorPageCommitted = false;
         webkit_web_view_go_back(d->nativeWebView());
     }
 }
 void SystemWebViewWidget::forward() {
     if (d->available && webkit_web_view_can_go_forward(d->nativeWebView())) {
+        d->httpErrorPending = false;
+        d->internalErrorPageLoading = false;
+        d->internalErrorPageCommitted = false;
         webkit_web_view_go_forward(d->nativeWebView());
     }
 }
@@ -672,6 +764,10 @@ void SystemWebViewWidget::stop() {
 }
 void SystemWebViewWidget::reload() {
     if (d->available) {
+        if (!d->internalErrorUrl.isEmpty() && (d->internalErrorPageLoading || d->loadFailed)) {
+            setUrl(d->internalErrorUrl);
+            return;
+        }
         webkit_web_view_reload(d->nativeWebView());
     }
 }
@@ -788,7 +884,41 @@ void SystemWebViewWidget::setDownloadDirectory(const QString& directoryPath) {
     }
 }
 QString SystemWebViewWidget::downloadDirectory() const { return d->downloadDirectory; }
-void SystemWebViewWidget::renderErrorPage(const QUrl&, const QString&, int) { warnUnsupported("renderErrorPage()"); }
+void SystemWebViewWidget::renderErrorPage(const QUrl& url, const QString& reason, int httpStatus) {
+    if (!d->available || d->webView == nullptr) {
+        return;
+    }
+
+    const QString title = QStringLiteral("Page could not be loaded");
+    const QString reasonText = reason.isEmpty() ? QStringLiteral("The page could not be loaded successfully.") : reason;
+    const QString statusText = httpStatus > 0 ? QStringLiteral("HTTP %1").arg(httpStatus) : QString();
+    const QString html = QStringLiteral(
+                             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+                             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                             "<title>%1</title><style>"
+                             ":root{color-scheme:light dark}html,body{height:100%}"
+                             "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;"
+                             "background:#fff;color:#000}.card{max-width:720px;margin:8vh auto;padding:28px;"
+                             "border-radius:16px;background:#fff;color:#000;box-shadow:0 6px 24px #0000002e}"
+                             "code{overflow-wrap:anywhere;background:#eee;color:#000;padding:2px 6px;border-radius:6px}"
+                             "@media(prefers-color-scheme:dark){body{background:#000;color:#fff}.card{background:#111;"
+                             "color:#eee;box-shadow:0 6px 24px #ffffff0d}code{background:#222;color:#fff}}"
+                             "</style></head><body><main class=\"card\"><h1>%1</h1><p>URL: <code>%2</code></p>"
+                             "<p>%3 <small>%4</small></p></main></body></html>")
+                             .arg(title.toHtmlEscaped(),
+                                  url.toString().toHtmlEscaped(),
+                                  reasonText.toHtmlEscaped(),
+                                  statusText.toHtmlEscaped());
+
+    d->httpErrorPending = false;
+    d->internalErrorPageLoading = true;
+    d->internalErrorPageCommitted = false;
+    d->internalErrorUrl = url;
+    d->loadFailed = true;
+    const QByteArray htmlUtf8 = html.toUtf8();
+    const QByteArray baseUri = url.toEncoded();
+    webkit_web_view_load_html(d->nativeWebView(), htmlUtf8.constData(), baseUri.constData());
+}
 void SystemWebViewWidget::setUserAgent(const QString& userAgent) {
     d->customUserAgent = userAgent.trimmed();
     applyUserAgent();
