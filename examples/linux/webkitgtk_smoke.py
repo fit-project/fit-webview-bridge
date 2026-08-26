@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import threading
@@ -57,6 +58,14 @@ class DownloadHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(DOWNLOAD_PAYLOAD)))
             self.end_headers()
             self.wfile.write(DOWNLOAD_PAYLOAD)
+            return
+        if self.path == "/spa-source":
+            payload = b"<!doctype html><html><head><title>SPA source</title></head><body>SPA SOURCE</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
         if self.path.startswith("/http-ok"):
             payload = b"<!doctype html><html><head><title>HTTP smoke OK</title></head><body>HTTP OK</body></html>"
@@ -220,6 +229,11 @@ def main() -> int:
         "popup_results": {},
         "popup_error_failures": 0,
         "popup_error_successes": 0,
+        "download_navigation_failures": 0,
+        "popup_download_navigation_failures": 0,
+        "download_navigation_completions": 0,
+        "popup_download_navigation_completions": 0,
+        "spa_results": {},
     }
 
     def on_url_changed(url: QUrl) -> None:
@@ -281,6 +295,15 @@ def main() -> int:
             "JavaScript null": observed["javascript"].get("null", (False, "")) == (None, ""),
             "JavaScript fire-and-forget": observed["javascript"].get("fire", (None, "")) == (42.0, ""),
             "JavaScript error": bool(observed["javascript"].get("error", (None, ""))[1]),
+            "JavaScript object": observed["javascript"].get("object", (None, ""))
+            == ('{"foo":"bar","value":42}', ""),
+            "JavaScript array": observed["javascript"].get("array", (None, ""))
+            == ('[1,"two",true,null]', ""),
+            "JavaScript nested": json.loads(observed["javascript"].get("nested", ("null", ""))[0])
+            == {"items": [1, {"ok": True}], "meta": {"name": "nested"}}
+            and not observed["javascript"].get("nested", (None, "missing error"))[1],
+            "JavaScript serialization error": observed["javascript"].get("cyclic", (False, ""))[0] is None
+            and bool(observed["javascript"].get("cyclic", (None, ""))[1]),
             "unique JavaScript tokens": len(observed["javascript_tokens"])
             == len(set(observed["javascript_tokens"])),
             "no fire-and-forget result": not observed["unexpected_javascript_tokens"],
@@ -304,6 +327,8 @@ def main() -> int:
             "existing file preserved": (Path(download_temp.name) / "smoke-download.txt").read_bytes()
             == b"pre-existing\n",
             "download failure": bool(observed["download_failed"] and observed["download_failed"][-1][1]),
+            "download navigation no false failure": observed["download_navigation_failures"] == 0,
+            "download navigation no page completion": observed["download_navigation_completions"] == 0,
             "proxy support": observed["proxy_supported"],
             "invalid proxies rejected": observed["proxy_invalid_rejected"],
             "proxy configured": observed["proxy_configured"],
@@ -345,6 +370,14 @@ def main() -> int:
             "popup single error failure": observed["popup_error_failures"] == 1,
             "popup no false error success": observed["popup_error_successes"] == 0,
             "no secondary popup WebView": observed["popup_results"].get("same_view", False),
+            "popup download no false failure": observed["popup_download_navigation_failures"] == 0,
+            "popup download no page completion": observed["popup_download_navigation_completions"] == 0,
+            "SPA pushState": observed["spa_results"].get("push", False),
+            "SPA replaceState": observed["spa_results"].get("replace", False),
+            "SPA hash navigation": observed["spa_results"].get("hash", False),
+            "SPA hash Back": observed["spa_results"].get("hash_back", False),
+            "SPA popstate Back": observed["spa_results"].get("popstate", False),
+            "SPA URL signals deduplicated": observed["spa_results"].get("deduplicated", False),
         }
         for name, passed in checks.items():
             print(f"CHECK {name}: {'PASS' if passed else 'FAIL'}", flush=True)
@@ -479,6 +512,22 @@ def main() -> int:
         phase["value"] = "popup_source"
         web_view.setUrl(http_url("/popup-source"))
 
+    def start_spa_smoke() -> None:
+        phase["value"] = "spa_source"
+        web_view.setUrl(http_url("/spa-source"))
+
+    def spa_url(path: str) -> str:
+        return http_url(path).toString()
+
+    def spa_state_matches(result, path: str) -> bool:
+        expected = spa_url(path)
+        return (
+            result == expected
+            and web_view.url().toString() == expected
+            and observed["urls"][-1] == expected
+            and observed["navigation_display_urls"][-1] == expected
+        )
+
     def request_http_error_page(code: str) -> None:
         phase["value"] = f"http_{code}"
         path = "/http-404?unsafe=%3Cfit-unsafe%3E&quote=%22value%22" if code == "404" else f"/http-{code}"
@@ -546,6 +595,10 @@ def main() -> int:
             evaluate("boolean", "true")
             evaluate("null", "null")
             evaluate("error", "throw new Error('expected Linux smoke error')")
+            evaluate("object", '({foo: "bar", value: 42})')
+            evaluate("array", '[1, "two", true, null]')
+            evaluate("nested", '({items: [1, {ok: true}], meta: {name: "nested"}})')
+            evaluate("cyclic", "(() => { const value = {}; value.self = value; return value; })()")
             QTimer.singleShot(100, lambda: evaluate("fire", "window.__fitFireAndForget + 1"))
             web_view.clearCacheData()
             web_view.clearWebsiteData()
@@ -592,9 +645,37 @@ def main() -> int:
                 and expected_url in text
                 and web_view.url().toString() == expected_url
             )
+            QTimer.singleShot(200, start_spa_smoke)
+        elif label == "spa_push":
+            observed["spa_results"]["push"] = spa_state_matches(result, "/spa/pushed?value=1")
+            evaluate("spa_replace", "history.replaceState({}, '', '/spa/replaced#one'); location.href")
+        elif label == "spa_replace":
+            observed["spa_results"]["replace"] = spa_state_matches(result, "/spa/replaced#one")
+            evaluate("spa_hash", "location.hash = 'two'; location.href")
+        elif label == "spa_hash":
+            observed["spa_results"]["hash"] = spa_state_matches(result, "/spa/replaced#two")
+            web_view.evaluateJavaScript("history.back()")
+            QTimer.singleShot(300, lambda: evaluate("spa_hash_back", "location.href"))
+        elif label == "spa_hash_back":
+            observed["spa_results"]["hash_back"] = spa_state_matches(result, "/spa/replaced#one")
+            web_view.evaluateJavaScript("history.back()")
+            QTimer.singleShot(300, lambda: evaluate("spa_popstate", "location.href"))
+        elif label == "spa_popstate":
+            observed["spa_results"]["popstate"] = spa_state_matches(result, "/spa-source")
+            expected_counts = {
+                spa_url("/spa-source"): 2,
+                spa_url("/spa/pushed?value=1"): 1,
+                spa_url("/spa/replaced#one"): 2,
+                spa_url("/spa/replaced#two"): 1,
+            }
+            observed["spa_results"]["deduplicated"] = all(
+                observed["urls"].count(url) == count
+                and observed["navigation_display_urls"].count(url) == count
+                for url, count in expected_counts.items()
+            )
             phase["value"] = "done"
             QTimer.singleShot(300, finish_automated_smoke)
-        required = {"number", "string", "boolean", "null", "error", "fire"}
+        required = {"number", "string", "boolean", "null", "error", "object", "array", "nested", "cyclic", "fire"}
         if required.issubset(observed["javascript"]) and phase["value"] == "javascript":
             QTimer.singleShot(250, start_proxy_smoke)
 
@@ -605,7 +686,15 @@ def main() -> int:
         print(f"loadFinished: {ok}", flush=True)
         if not automated:
             return
+        if phase["value"] in ("download", "download_failure"):
+            observed["download_navigation_completions"] += 1
+        elif phase["value"] == "popup_download":
+            observed["popup_download_navigation_completions"] += 1
         if not ok:
+            if phase["value"] in ("download", "download_failure"):
+                observed["download_navigation_failures"] += 1
+            elif phase["value"] == "popup_download":
+                observed["popup_download_navigation_failures"] += 1
             if phase["value"] == "popup_error":
                 observed["popup_error_failures"] += 1
                 QTimer.singleShot(
@@ -676,6 +765,8 @@ def main() -> int:
             )
         elif current_phase == "popup_error":
             observed["popup_error_successes"] += 1
+        elif current_phase == "spa_source":
+            evaluate("spa_push", "history.pushState({}, '', '/spa/pushed?value=1'); location.href")
         elif current_phase == "proxy":
             observed["proxy_request"] = (
                 len(ProxyHandler.requests) == 1

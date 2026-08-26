@@ -85,8 +85,10 @@ QT_QPA_PLATFORM=xcb \
 ## Linux API notes
 
 JavaScript evaluation uses JavaScriptCoreGTK and maps null/undefined, boolean,
-number, and string results to their QVariant equivalents. Structured object and
-array serialization is intentionally not part of the current milestone.
+number, and string results to their QVariant equivalents. Objects and arrays
+are returned as compact JSON text, matching the macOS public representation. A
+result that cannot be serialized, such as a cyclic object graph, is reported
+through the existing JavaScript error string.
 
 As on macOS, `userAgent()` returns the configured full override, or an empty
 string when no override is active; it does not return WebKit's effective
@@ -105,6 +107,9 @@ Downloads require an explicit directory configured with
 system directory. Existing files are preserved by adding ` (N)` before the
 extension. Download progress reports cumulative received bytes and the response
 Content-Length, or `-1` when WebKitGTK does not provide a total size.
+When a main-frame response is intentionally converted into a download, it does
+not emit `loadFinished(false)` or a misleading `loadFinished(true)` for a page
+navigation.
 
 Explicit proxy configuration uses a dedicated WebKit context and website data
 manager for each `SystemWebViewWidget`, so changing one widget does not alter
@@ -146,3 +151,8 @@ popup-initiated downloads, and popup-initiated HTTP 404 responses.
 Popup destinations are accepted for HTTP, HTTPS, file, data, about, and blob
 URLs. Empty destinations and schemes such as `mailto`, `tel`, and `javascript`
 are ignored; the backend does not launch external applications for them.
+
+WebKitGTK's native URI property tracks same-document History API changes. The
+automated smoke test verifies `pushState()`, `replaceState()`, hash navigation,
+and Back/popstate updates for `url()`, `urlChanged()`, and
+`navigationDisplayUrlChanged()` without JavaScript injection.

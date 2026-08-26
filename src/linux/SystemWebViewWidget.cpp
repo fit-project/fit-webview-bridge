@@ -100,31 +100,49 @@ bool isSupportedPopupUrl(const QUrl& url) {
         || scheme == QStringLiteral("about") || scheme == QStringLiteral("blob");
 }
 
-QVariant variantFromJscValue(JSCValue* value) {
+struct JavaScriptConversion {
+    QVariant value;
+    QString error;
+};
+
+JavaScriptConversion variantFromJscValue(JSCValue* value) {
     if (value == nullptr || jsc_value_is_null(value) || jsc_value_is_undefined(value)) {
         return {};
     }
     if (jsc_value_is_boolean(value)) {
-        return QVariant::fromValue(static_cast<bool>(jsc_value_to_boolean(value)));
+        return {QVariant::fromValue(static_cast<bool>(jsc_value_to_boolean(value))), {}};
     }
     if (jsc_value_is_number(value)) {
-        return QVariant::fromValue(jsc_value_to_double(value));
+        return {QVariant::fromValue(jsc_value_to_double(value)), {}};
     }
     if (jsc_value_is_string(value)) {
         char* text = jsc_value_to_string(value);
         const QString result = text != nullptr ? QString::fromUtf8(text) : QString();
         g_free(text);
-        return result;
+        return {result, {}};
     }
-    return {};
+    if (jsc_value_is_object(value)) {
+        char* json = jsc_value_to_json(value, 0);
+        if (json == nullptr) {
+            return {{}, QStringLiteral("JavaScript result could not be serialized as JSON")};
+        }
+        const QString result = QString::fromUtf8(json);
+        g_free(json);
+        if (result.isEmpty()) {
+            return {{}, QStringLiteral("JavaScript result produced empty JSON")};
+        }
+        return {result, {}};
+    }
+    return {{}, QStringLiteral("Unsupported JavaScript result type")};
 }
 
 void javascriptFinished(GObject* source, GAsyncResult* result, gpointer userData) {
     std::unique_ptr<JavaScriptRequest> request(static_cast<JavaScriptRequest*>(userData));
     GError* error = nullptr;
     JSCValue* value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
-    const QVariant output = variantFromJscValue(value);
-    const QString errorText = error != nullptr ? QString::fromUtf8(error->message) : QString();
+    const JavaScriptConversion conversion = variantFromJscValue(value);
+    const QVariant output = conversion.value;
+    const QString errorText = error != nullptr ? QString::fromUtf8(error->message) : conversion.error;
 
     if (value != nullptr) {
         g_object_unref(value);
@@ -239,6 +257,7 @@ struct SystemWebViewWidget::Impl {
     QString currentTitle;
     int currentProgress = -1;
     bool loadFailed = false;
+    bool intentionalDownloadPending = false;
     bool httpErrorPending = false;
     bool internalErrorPageLoading = false;
     bool internalErrorPageCommitted = false;
@@ -569,7 +588,12 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
             const bool isDownload = isAttachment
                 || !webkit_response_policy_decision_is_mime_type_supported(responseDecision);
             const guint status = webkit_uri_response_get_status_code(response);
-            if (status < 400 || isDownload) {
+            if (isDownload) {
+                self->d->intentionalDownloadPending = true;
+                webkit_policy_decision_download(decision);
+                return TRUE;
+            }
+            if (status < 400) {
                 return FALSE;
             }
             if (self->d->httpErrorPending || self->d->internalErrorPageLoading) {
@@ -634,6 +658,7 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent event, gpointer data) {
             auto* self = static_cast<SystemWebViewWidget*>(data);
             if (event == WEBKIT_LOAD_STARTED) {
+                self->d->intentionalDownloadPending = false;
                 if (!self->d->httpErrorPending && !self->d->internalErrorPageLoading) {
                     self->d->loadFailed = false;
                 }
@@ -666,9 +691,18 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
     g_signal_connect(
         d->webView,
         "load-failed",
-        G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char*, GError*, gpointer data) -> gboolean {
+        G_CALLBACK(+[](WebKitWebView*, WebKitLoadEvent, const char*, GError* error, gpointer data) -> gboolean {
             auto* self = static_cast<SystemWebViewWidget*>(data);
             if (self->d->httpErrorPending || self->d->internalErrorPageLoading) {
+                return TRUE;
+            }
+            const bool interruptedByDownload = error != nullptr && error->domain == WEBKIT_POLICY_ERROR
+                && error->code == WEBKIT_POLICY_ERROR_FRAME_LOAD_INTERRUPTED_BY_POLICY_CHANGE
+                && self->d->intentionalDownloadPending;
+            if (interruptedByDownload) {
+                self->d->intentionalDownloadPending = false;
+                self->d->loadFailed = true;
+                self->d->currentProgress = -1;
                 return TRUE;
             }
             self->d->loadFailed = true;
