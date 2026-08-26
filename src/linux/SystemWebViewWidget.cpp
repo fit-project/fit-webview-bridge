@@ -517,8 +517,19 @@ SystemWebViewWidget::SystemWebViewWidget(QWidget* parent) : QWidget(parent), d(n
         "delete-event",
         G_CALLBACK(+[](GtkWidget*, GdkEvent*, gpointer) -> gboolean { return TRUE; }),
         nullptr);
-    d->webContext = webkit_web_context_new();
+    d->webContext = webkit_web_context_new_ephemeral();
     d->websiteDataManager = webkit_web_context_get_website_data_manager(d->webContext);
+    if (!webkit_web_context_is_ephemeral(d->webContext)
+        || !webkit_website_data_manager_is_ephemeral(d->websiteDataManager)) {
+        qCritical() << "WebKitGTK failed to create an ephemeral browsing context.";
+        g_object_unref(d->webContext);
+        d->webContext = nullptr;
+        d->websiteDataManager = nullptr;
+        gtk_widget_destroy(d->plug);
+        d->plug = nullptr;
+        setEnabled(false);
+        return;
+    }
     d->webView = webkit_web_view_new_with_context(d->webContext);
     d->downloadStartedHandler = g_signal_connect(
         d->webContext, "download-started", G_CALLBACK(Impl::contextDownloadStarted), d);

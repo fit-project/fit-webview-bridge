@@ -80,9 +80,28 @@ QT_QPA_PLATFORM=xcb \
 ./.venv311/bin/python examples/linux/webkitgtk_smoke.py --automated
 ```
 
+The focused session-isolation smoke test uses only a local HTTP server:
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+QT_QPA_PLATFORM=xcb \
+./.venv311/bin/python examples/linux/webkitgtk_ephemeral_smoke.py
+```
+
 `Could NOT find WrapVulkanHeaders` is a non-fatal Qt diagnostic for this build.
 
 ## Linux API notes
+
+Each Linux `SystemWebViewWidget` owns a dedicated ephemeral WebKit context and
+website data manager. Cookies, local storage, databases, caches, and other
+website data are session-scoped: they remain available during the lifetime of
+that widget/context, but are not intended to survive its destruction. Separate
+widgets do not share browsing state.
+
+Files explicitly saved through the download API remain ordinary persistent
+filesystem files and are not part of WebKit's ephemeral website storage.
+`clearWebsiteData()` and `clearCacheData()` remain available to clear state
+during a live widget session.
 
 JavaScript evaluation uses JavaScriptCoreGTK and maps null/undefined, boolean,
 number, and string results to their QVariant equivalents. Objects and arrays
