@@ -24,13 +24,90 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-x86-64:
-    runs-on: ubuntu-24.04
+  linux-wheel:
+    name: Linux ${{ matrix.arch }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+
+    strategy:
+      # Keep every cell running during the initial matrix bring-up so one
+      # failure does not hide compatibility results from the other targets.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.11"
+            py_tag: "311"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.12"
+            py_tag: "312"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.13"
+            py_tag: "313"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.11"
+            py_tag: "311"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.12"
+            py_tag: "312"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.13"
+            py_tag: "313"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
 
     env:
       QT_VERSION: "6.9.0"
       PYSIDE_VERSION: "6.9.0"
+      PYTHON_VERSION: ${{ matrix.python }}
+      PY_TAG: ${{ matrix.py_tag }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+      AQT_HOST: ${{ matrix.aqt_host }}
+      AQT_ARCH: ${{ matrix.aqt_arch }}
+      QT_SDK_DIR: ${{ matrix.qt_sdk_dir }}
+      WHEEL_PLATFORM: ${{ matrix.wheel_platform }}
+      EXTENSION_ARCH: ${{ matrix.extension_arch }}
 
     steps:
       - name: Checkout repository
@@ -42,12 +119,10 @@ jobs:
           set -euo pipefail
           uname -m
           cat /etc/os-release
-          case "$(uname -m)" in
-            x86_64|amd64) ;;
-            *) echo "Expected an x86_64 runner" >&2; exit 1 ;;
-          esac
+          actual_machine="$(uname -m)"
+          test "${actual_machine}" = "${EXPECTED_MACHINE}"
           echo "QT_ROOT=${RUNNER_TEMP}/Qt" >> "${GITHUB_ENV}"
-          echo "BUILD_DIR=${RUNNER_TEMP}/build-linux-ci-py311" >> "${GITHUB_ENV}"
+          echo "BUILD_DIR=${RUNNER_TEMP}/build-linux-ci-py${PY_TAG}-${TARGET_ARCH}" >> "${GITHUB_ENV}"
 
       - name: Install Ubuntu build and X11 runtime dependencies
         run: |
@@ -60,10 +135,10 @@ jobs:
             libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0 libxml2 \
             ninja-build pkg-config ripgrep xauth xvfb
 
-      - name: Setup Python 3.11
+      - name: Setup Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       - name: Install Python build tools and bindings
@@ -76,12 +151,13 @@ jobs:
             "scikit-build-core>=0.9" \
             aqtinstall auditwheel build cmake ninja
           python --version
+          python -c "import sys; expected=tuple(map(int, '${PYTHON_VERSION}'.split('.'))); assert sys.version_info[:2] == expected, sys.version; print(sys.version)"
           python -c "import PySide6, shiboken6; print('PySide6', PySide6.__version__); print('shiboken6', shiboken6.__version__)"
 
       - name: Install Qt SDK
         run: |
-          python -m aqt install-qt linux desktop "${QT_VERSION}" linux_gcc_64 --outputdir "${QT_ROOT}"
-          qt6_dir="${QT_ROOT}/${QT_VERSION}/gcc_64/lib/cmake/Qt6"
+          python -m aqt install-qt "${AQT_HOST}" desktop "${QT_VERSION}" "${AQT_ARCH}" --outputdir "${QT_ROOT}"
+          qt6_dir="${QT_ROOT}/${QT_VERSION}/${QT_SDK_DIR}/lib/cmake/Qt6"
           test -f "${qt6_dir}/Qt6Config.cmake"
           echo "Qt6_DIR=${qt6_dir}" >> "${GITHUB_ENV}"
 
@@ -107,7 +183,7 @@ jobs:
         run: |
           python -m compileall -q fit_webview_bridge examples/linux tests
 
-      - name: Build CPython 3.11 x86_64 wheel
+      - name: Build native CPython wheel
         run: |
           rm -rf dist
           export CMAKE_ARGS="-DQt6_DIR=${Qt6_DIR} -DPython3_EXECUTABLE=$(command -v python) -DSHIBOKEN6_GEN=$(command -v shiboken6)"
@@ -115,7 +191,7 @@ jobs:
           mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl' -print)
           test "${#wheels[@]}" -eq 1
           wheel="${wheels[0]}"
-          [[ "$(basename "${wheel}")" == *-cp311-cp311-linux_x86_64.whl ]]
+          [[ "$(basename "${wheel}")" == *-cp${PY_TAG}-cp${PY_TAG}-${WHEEL_PLATFORM}.whl ]]
           echo "WHEEL_PATH=$(realpath "${wheel}")" >> "${GITHUB_ENV}"
           echo "Wheel: ${wheel}"
 
@@ -139,7 +215,8 @@ jobs:
               ]
               assert names.count("fit_webview_bridge/__init__.py") == 1
               assert len(extensions) == 1, extensions
-              assert "cpython-311-x86_64-linux-gnu" in extensions[0], extensions[0]
+              expected_suffix = f"cpython-{os.environ['PY_TAG']}-{os.environ['EXTENSION_ARCH']}.so"
+              assert extensions[0].endswith(expected_suffix), (extensions[0], expected_suffix)
               assert any(name.endswith(".dist-info/METADATA") for name in names)
               forbidden = ("/build/", "Qt/", ".libs/", "libwebkit", "libgtk", "libjavascriptcore")
               assert not any(token in name for name in names for token in forbidden), names
@@ -156,7 +233,8 @@ jobs:
           readelf -d "${packaged_so}"
           objdump -p "${packaged_so}" | grep -E 'NEEDED|RPATH|RUNPATH'
           runpath="$(readelf -d "${packaged_so}" | grep -E 'RPATH|RUNPATH')"
-          grep -Fq '$ORIGIN:$ORIGIN/../PySide6/Qt/lib:$ORIGIN/../PySide6:$ORIGIN/../shiboken6' <<<"${runpath}"
+          runpath_value="$(sed -n 's/.*Library runpath: \[\(.*\)\].*/\1/p' <<<"${runpath}")"
+          test "${runpath_value}" = '$ORIGIN:$ORIGIN/../PySide6/Qt/lib:$ORIGIN/../PySide6:$ORIGIN/../shiboken6'
           if grep -Eq '/(home|opt|tmp)/|\.venv' <<<"${runpath}"; then
             echo "Absolute build path found in packaged RUNPATH" >&2
             exit 1
@@ -166,7 +244,7 @@ jobs:
       - name: Run auditwheel diagnostics
         run: |
           auditwheel show "${WHEEL_PATH}"
-          [[ "$(basename "${WHEEL_PATH}")" == *-linux_x86_64.whl ]]
+          [[ "$(basename "${WHEEL_PATH}")" == *-${WHEEL_PLATFORM}.whl ]]
 
       - name: Install wheel into clean consumer environment
         shell: bash
@@ -209,7 +287,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t extensions < <(find "${CLEAN_VENV}/lib/python3.11/site-packages/fit_webview_bridge" -maxdepth 1 -type f -name 'systemwebview*.so' -print)
+          site_packages="$(env -u PYTHONPATH "${CLEAN_VENV}/bin/python" -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
+          mapfile -t extensions < <(find "${site_packages}/fit_webview_bridge" -maxdepth 1 -type f -name 'systemwebview*.so' -print)
           test "${#extensions[@]}" -eq 1
           installed_so="${extensions[0]}"
           readelf -d "${installed_so}"
@@ -295,6 +374,6 @@ jobs:
       - name: Upload Linux wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: linux-x86_64-cp311-wheel
-          path: dist/*-cp311-cp311-linux_x86_64.whl
+          name: linux-${{ matrix.arch }}-cp${{ matrix.py_tag }}-wheel
+          path: dist/*-cp${{ matrix.py_tag }}-cp${{ matrix.py_tag }}-${{ matrix.wheel_platform }}.whl
           if-no-files-found: error

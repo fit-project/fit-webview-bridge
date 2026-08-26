@@ -12,12 +12,17 @@ PySide6 dependency. A wheel consumer does not need CMake, Ninja, a compiler,
 the Shiboken generator, WebKitGTK development headers, or the separately
 installed Qt SDK used to build the wheel.
 
-The Linux CI workflow targets the GitHub-hosted Ubuntu 24.04 x86-64 runner and
-builds a CPython 3.11 `linux_x86_64` wheel. It verifies the wheel contents and
-relative ELF RUNPATH, installs it into an isolated virtual environment outside
-the checkout, checks native dependency resolution, and runs a deterministic
-X11 smoke test under Xvfb. The workflow uses `auditwheel show` for diagnostics
-only: it does not run `auditwheel repair` or bundle the system web engine.
+The Linux CI workflow is configured for an Ubuntu 24.04 native matrix covering
+x86-64 and ARM64 with CPython 3.11, 3.12, and 3.13. The x86-64 cells use
+`ubuntu-24.04`; the ARM64 cells use GitHub's `ubuntu-24.04-arm` runner and are
+pending their first complete remote matrix validation. The Python 3.12/3.13
+x86-64 cells are likewise pending; the existing Python 3.11 x86-64 cell is the
+currently validated CI baseline. Each cell builds a native `linux_x86_64` or
+`linux_aarch64` wheel, verifies its contents and relative ELF RUNPATH, installs
+it into an isolated virtual environment outside the checkout, checks native
+dependency resolution, and runs a deterministic X11 smoke test under Xvfb. The
+workflow uses `auditwheel show` for diagnostics only: it does not run
+`auditwheel repair` or bundle the system web engine.
 Because this first CI job builds and tests on the same runner, its clean Python
 environment proves wheel isolation but the runner still has development apt
 packages installed. A later runtime-only image/job must establish the strictly
