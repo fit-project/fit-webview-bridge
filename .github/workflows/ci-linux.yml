@@ -1,0 +1,379 @@
+name: CI Linux
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/linux/**"
+      - "include/**"
+      - "bindings/**"
+      - "fit_webview_bridge/**"
+      - "scripts/linux/**"
+      - "examples/linux/**"
+      - "tests/**"
+      - "docs/build-linux.md"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - ".clang-format"
+      - ".github/workflows/ci-linux.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-wheel:
+    name: Linux ${{ matrix.arch }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    strategy:
+      # Keep every cell running during the initial matrix bring-up so one
+      # failure does not hide compatibility results from the other targets.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.11"
+            py_tag: "311"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.12"
+            py_tag: "312"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: x86_64
+            runner: ubuntu-24.04
+            machine: x86_64
+            python: "3.13"
+            py_tag: "313"
+            aqt_host: linux
+            aqt_arch: linux_gcc_64
+            qt_sdk_dir: gcc_64
+            wheel_platform: linux_x86_64
+            extension_arch: x86_64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.11"
+            py_tag: "311"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.12"
+            py_tag: "312"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+            python: "3.13"
+            py_tag: "313"
+            aqt_host: linux_arm64
+            aqt_arch: linux_gcc_arm64
+            qt_sdk_dir: gcc_arm64
+            wheel_platform: linux_aarch64
+            extension_arch: aarch64-linux-gnu
+
+    env:
+      QT_VERSION: "6.9.0"
+      PYSIDE_VERSION: "6.9.0"
+      PYTHON_VERSION: ${{ matrix.python }}
+      PY_TAG: ${{ matrix.py_tag }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+      AQT_HOST: ${{ matrix.aqt_host }}
+      AQT_ARCH: ${{ matrix.aqt_arch }}
+      QT_SDK_DIR: ${{ matrix.qt_sdk_dir }}
+      WHEEL_PLATFORM: ${{ matrix.wheel_platform }}
+      EXTENSION_ARCH: ${{ matrix.extension_arch }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Confirm runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -m
+          cat /etc/os-release
+          actual_machine="$(uname -m)"
+          test "${actual_machine}" = "${EXPECTED_MACHINE}"
+          echo "QT_ROOT=${RUNNER_TEMP}/Qt" >> "${GITHUB_ENV}"
+          echo "BUILD_DIR=${RUNNER_TEMP}/build-linux-ci-py${PY_TAG}-${TARGET_ARCH}" >> "${GITHUB_ENV}"
+
+      - name: Install Ubuntu build and X11 runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang-format curl git \
+            libegl1 libgl1 libgl1-mesa-dri libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0 libxml2 \
+            ninja-build pkg-config ripgrep xauth xvfb
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install Python build tools and bindings
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "PySide6==${PYSIDE_VERSION}" \
+            "shiboken6==${PYSIDE_VERSION}" \
+            "shiboken6-generator==${PYSIDE_VERSION}" \
+            "scikit-build-core>=0.9" \
+            aqtinstall auditwheel build cmake ninja
+          python --version
+          python -c "import sys; expected=tuple(map(int, '${PYTHON_VERSION}'.split('.'))); assert sys.version_info[:2] == expected, sys.version; print(sys.version)"
+          python -c "import PySide6, shiboken6; print('PySide6', PySide6.__version__); print('shiboken6', shiboken6.__version__)"
+
+      - name: Install Qt SDK
+        run: |
+          python -m aqt install-qt "${AQT_HOST}" desktop "${QT_VERSION}" "${AQT_ARCH}" --outputdir "${QT_ROOT}"
+          qt6_dir="${QT_ROOT}/${QT_VERSION}/${QT_SDK_DIR}/lib/cmake/Qt6"
+          test -f "${qt6_dir}/Qt6Config.cmake"
+          echo "Qt6_DIR=${qt6_dir}" >> "${GITHUB_ENV}"
+
+      - name: Configure Linux native build and bindings
+        run: |
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_BINDINGS=ON \
+            -DQt6_DIR="${Qt6_DIR}" \
+            -DPython3_EXECUTABLE="$(command -v python)" \
+            -DSHIBOKEN6_GEN="$(command -v shiboken6)"
+
+      - name: Build and developer smoke import
+        run: |
+          cmake --build "${BUILD_DIR}" --parallel
+          PYTHONPATH="${GITHUB_WORKSPACE}" \
+            python -c "from fit_webview_bridge import systemwebview; print('developer import OK:', systemwebview.__file__)"
+
+      - name: Run non-GUI checks
+        run: |
+          python -m compileall -q fit_webview_bridge examples/linux tests
+
+      - name: Build native CPython wheel
+        run: |
+          rm -rf dist
+          export CMAKE_ARGS="-DQt6_DIR=${Qt6_DIR} -DPython3_EXECUTABLE=$(command -v python) -DSHIBOKEN6_GEN=$(command -v shiboken6)"
+          python -m build --wheel --no-isolation
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl' -print)
+          test "${#wheels[@]}" -eq 1
+          wheel="${wheels[0]}"
+          [[ "$(basename "${wheel}")" == *-cp${PY_TAG}-cp${PY_TAG}-${WHEEL_PLATFORM}.whl ]]
+          echo "WHEEL_PATH=$(realpath "${wheel}")" >> "${GITHUB_ENV}"
+          echo "Wheel: ${wheel}"
+
+      - name: Inspect wheel contents and packaged ELF
+        shell: bash
+        run: |
+          set -euo pipefail
+          export WHEEL_PATH
+          python - <<'PY'
+          import os
+          import zipfile
+
+          wheel = os.environ["WHEEL_PATH"]
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              for name in names:
+                  print(name)
+              extensions = [
+                  name for name in names
+                  if name.startswith("fit_webview_bridge/systemwebview") and name.endswith(".so")
+              ]
+              assert names.count("fit_webview_bridge/__init__.py") == 1
+              assert len(extensions) == 1, extensions
+              expected_suffix = f"cpython-{os.environ['PY_TAG']}-{os.environ['EXTENSION_ARCH']}.so"
+              assert extensions[0].endswith(expected_suffix), (extensions[0], expected_suffix)
+              assert any(name.endswith(".dist-info/METADATA") for name in names)
+              forbidden = ("/build/", "Qt/", ".libs/", "libwebkit", "libgtk", "libjavascriptcore")
+              assert not any(token in name for name in names for token in forbidden), names
+              assert len([name for name in names if name.endswith(".so")]) == 1
+          PY
+
+          extract_dir="${RUNNER_TEMP}/fitwvb-wheel-extract"
+          rm -rf "${extract_dir}"
+          mkdir -p "${extract_dir}"
+          python -m zipfile -e "${WHEEL_PATH}" "${extract_dir}"
+          mapfile -t extensions < <(find "${extract_dir}/fit_webview_bridge" -maxdepth 1 -type f -name 'systemwebview*.so' -print)
+          test "${#extensions[@]}" -eq 1
+          packaged_so="${extensions[0]}"
+          readelf -d "${packaged_so}"
+          objdump -p "${packaged_so}" | grep -E 'NEEDED|RPATH|RUNPATH'
+          runpath="$(readelf -d "${packaged_so}" | grep -E 'RPATH|RUNPATH')"
+          runpath_value="$(sed -n 's/.*Library runpath: \[\(.*\)\].*/\1/p' <<<"${runpath}")"
+          test "${runpath_value}" = '$ORIGIN:$ORIGIN/../PySide6/Qt/lib:$ORIGIN/../PySide6:$ORIGIN/../shiboken6'
+          if grep -Eq '/(home|opt|tmp)/|\.venv' <<<"${runpath}"; then
+            echo "Absolute build path found in packaged RUNPATH" >&2
+            exit 1
+          fi
+          echo "PACKAGED_SO=${packaged_so}" >> "${GITHUB_ENV}"
+
+      - name: Run auditwheel diagnostics
+        run: |
+          auditwheel show "${WHEEL_PATH}"
+          [[ "$(basename "${WHEEL_PATH}")" == *-${WHEEL_PLATFORM}.whl ]]
+
+      - name: Install wheel into clean consumer environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_root="${RUNNER_TEMP}/fitwvb-clean-wheel"
+          clean_venv="${clean_root}/venv"
+          rm -rf "${clean_root}"
+          mkdir -p "${clean_root}"
+          python -m venv "${clean_venv}"
+          cd "${clean_root}"
+          env -u PYTHONPATH "${clean_venv}/bin/python" -m pip install "${WHEEL_PATH}"
+          env -u PYTHONPATH "${clean_venv}/bin/python" -I - <<'PY'
+          import pathlib
+          import sys
+
+          import fit_webview_bridge
+          from fit_webview_bridge import SystemWebView
+          from fit_webview_bridge import systemwebview
+
+          prefix = pathlib.Path(sys.prefix).resolve()
+          for module in (fit_webview_bridge, systemwebview):
+              path = pathlib.Path(module.__file__).resolve()
+              print(path)
+              assert path.is_relative_to(prefix)
+          print("isolated import OK")
+          PY
+          env -u PYTHONPATH "${clean_venv}/bin/python" - <<'PY'
+          from importlib.metadata import distributions
+
+          names = {dist.metadata["Name"].lower() for dist in distributions()}
+          forbidden = {"cmake", "ninja", "scikit-build-core", "shiboken6-generator"}
+          assert names.isdisjoint(forbidden), names & forbidden
+          print("consumer packages:", *sorted(names), sep="\n")
+          PY
+          echo "CLEAN_ROOT=${clean_root}" >> "${GITHUB_ENV}"
+          echo "CLEAN_VENV=${clean_venv}" >> "${GITHUB_ENV}"
+
+      - name: Validate installed ELF dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          site_packages="$(env -u PYTHONPATH "${CLEAN_VENV}/bin/python" -c 'import sysconfig; print(sysconfig.get_path("platlib"))')"
+          mapfile -t extensions < <(find "${site_packages}/fit_webview_bridge" -maxdepth 1 -type f -name 'systemwebview*.so' -print)
+          test "${#extensions[@]}" -eq 1
+          installed_so="${extensions[0]}"
+          readelf -d "${installed_so}"
+          ldd_output="$(ldd "${installed_so}")"
+          printf '%s\n' "${ldd_output}"
+          ! grep -q 'not found' <<<"${ldd_output}"
+          grep -E "libQt6(Core|Gui|Widgets).*${CLEAN_VENV}.*/PySide6/Qt/lib" <<<"${ldd_output}"
+          grep -E "libpyside6.*${CLEAN_VENV}.*/PySide6" <<<"${ldd_output}"
+          grep -E "libshiboken6.*${CLEAN_VENV}.*/shiboken6" <<<"${ldd_output}"
+          grep -E 'libwebkit2gtk-4\.1\.so.* => /(usr/)?lib/' <<<"${ldd_output}"
+          grep -E 'libgtk-3\.so.* => /(usr/)?lib/' <<<"${ldd_output}"
+          if grep -Fq "${GITHUB_WORKSPACE}" <<<"${ldd_output}" || grep -Fq "${QT_ROOT}" <<<"${ldd_output}"; then
+            echo "Installed extension resolved a build-tree dependency" >&2
+            exit 1
+          fi
+          echo "INSTALLED_SO=${installed_so}" >> "${GITHUB_ENV}"
+
+      - name: Run installed-wheel Xvfb smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_script="${CLEAN_ROOT}/wheel_xvfb_smoke.py"
+          cat > "${smoke_script}" <<'PY'
+          from PySide6.QtCore import QTimer, QUrl
+          from PySide6.QtWidgets import QApplication
+
+          from fit_webview_bridge import SystemWebView
+
+          app = QApplication([])
+          view = SystemWebView()
+          result = {"finished": None}
+
+          def finish(ok):
+              result["finished"] = bool(ok)
+              print(f"loadFinished={bool(ok)}")
+              QTimer.singleShot(100, app.quit)
+
+          view.loadFinished.connect(finish)
+          view.resize(640, 480)
+          view.show()
+          view.setUrl(QUrl("data:text/html,<title>Wheel smoke</title><h1>Installed wheel OK</h1>"))
+          QTimer.singleShot(10_000, app.quit)
+          app.exec()
+          view.close()
+
+          if result["finished"] is not True:
+              raise SystemExit("installed-wheel Xvfb smoke did not finish successfully")
+          print("installed-wheel Xvfb smoke OK")
+          PY
+          cd "${CLEAN_ROOT}"
+          env -u PYTHONPATH \
+            QT_QPA_PLATFORM=xcb \
+            GDK_BACKEND=x11 \
+            LIBGL_ALWAYS_SOFTWARE=1 \
+            xvfb-run -a "${CLEAN_VENV}/bin/python" -I "${smoke_script}"
+
+      - name: Run static and quality checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t format_files < <(find src/linux -type f \( -name '*.cpp' -o -name '*.h' \) -print | sort)
+          test "${#format_files[@]}" -gt 0
+          clang-format --dry-run --Werror "${format_files[@]}"
+          home_pattern='/ho''me/'
+          if rg -n "${home_pattern}" \
+            --glob '!build*/**' --glob '!dist/**' --glob '!Qt/**' --glob '!.venv*/**' .; then
+            echo "Hardcoded /home path found" >&2
+            exit 1
+          fi
+          if rg -n '/usr/lib/(aarch64|x86_64)|/lib/(aarch64|x86_64)' \
+            --glob '!build*/**' --glob '!dist/**' --glob '!Qt/**' --glob '!.venv*/**' .; then
+            echo "Hardcoded architecture-specific system library path found" >&2
+            exit 1
+          fi
+          git diff --exit-code -- \
+            src/macos \
+            bindings/pyside6/macos \
+            include/fit_webview_bridge/SystemWebViewWidget.h \
+            bindings/pyside6/typesystem_systemwebview.xml \
+            .github/workflows/ci-macos.yml
+
+      - name: Upload Linux wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}-cp${{ matrix.py_tag }}-wheel
+          path: dist/*-cp${{ matrix.py_tag }}-cp${{ matrix.py_tag }}-${{ matrix.wheel_platform }}.whl
+          if-no-files-found: error
