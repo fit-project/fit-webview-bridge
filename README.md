@@ -95,7 +95,17 @@ Detailed build, test, and quality-check instructions are maintained in platform-
 
 - [macOS build and development guide](docs/build-macos.md)
 - [Linux build and smoke-test guide](docs/build-linux.md)
+- [Release and distribution guide](docs/release.md)
 - Windows build guide — planned
+
+## Release distribution
+
+Release wheels are intended for the FIT Project static Python package index at
+<https://fit-project.github.io/fit-python-index/simple/>. The current unified
+release workflow is a manual dry run: it builds and validates the complete
+six-wheel payload and uploads a GitHub Actions artifact for inspection, without
+publishing it. See the [release and distribution guide](docs/release.md) for the
+supported wheel matrix and the remaining publication milestone.
 
 ## Examples
 

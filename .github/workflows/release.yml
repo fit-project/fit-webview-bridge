@@ -1,0 +1,496 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    name: Build macOS ARM64 wheels
+    runs-on: macos-14
+    timeout-minutes: 150
+    env:
+      QT_VERSION: "6.9.0"
+      PYSIDE_VERSION: "6.9.0"
+      WHEELHOUSE: ${{ runner.temp }}/macos-arm64-wheels
+      QT_ROOT: ${{ runner.temp }}/Qt
+      Qt6_DIR: ${{ runner.temp }}/Qt/6.9.0/macos/lib/cmake/Qt6
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Confirm ARM64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -m
+          sw_vers
+          test "$(uname -m)" = "arm64"
+
+      - name: Setup Python 3.11
+        id: py311
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Setup Python 3.12
+        id: py312
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Python 3.13
+        id: py313
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install release build tools
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" -m pip install --upgrade pip
+          "${PYTHON_EXE}" -m pip install aqtinstall cibuildwheel packaging
+
+      - name: Resolve project version
+        id: project
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          version="$("${PYTHON_EXE}" -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "Resolved project version: ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Qt 6.9.0 SDK
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" -m aqt install-qt \
+            mac desktop "${QT_VERSION}" clang_64 --outputdir "${QT_ROOT}"
+          test -f "${Qt6_DIR}/Qt6Config.cmake"
+
+      - name: Build CPython 3.11-3.13 ARM64 wheels
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_BUILD: "cp311-macosx_arm64 cp312-macosx_arm64 cp313-macosx_arm64"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
+          CIBW_BUILD_VERBOSITY: "1"
+          SKBUILD_CMAKE_ARGS: "-DQt6_DIR=${{ env.Qt6_DIR }}"
+          SKBUILD_CONFIGURE_LOG: "1"
+          SKBUILD_BUILD_LOG: "1"
+          FITWVB_VENDORIZE: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "${WHEELHOUSE}"
+          "${PYTHON_EXE}" -m cibuildwheel --output-dir "${WHEELHOUSE}"
+
+      - name: Validate macOS wheel set and metadata
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" scripts/release/validate_release.py wheels \
+            --wheel-dir "${WHEELHOUSE}" \
+            --project-file pyproject.toml \
+            --platform macos \
+            --forbid-path "${GITHUB_WORKSPACE}" \
+            --forbid-path "${RUNNER_TEMP}" \
+            --forbid-path "${QT_ROOT}" \
+            --forbid-path "${TMPDIR}"
+
+      - name: Validate clean macOS consumer installs and linkage
+        shell: bash
+        env:
+          PY311: ${{ steps.py311.outputs.python-path }}
+          PY312: ${{ steps.py312.outputs.python-path }}
+          PY313: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          validate_wheel() {
+            local python_exe="$1"
+            local py_tag="$2"
+            local matches=("${WHEELHOUSE}"/*-cp"${py_tag}"-cp"${py_tag}"-macosx_*_arm64.whl)
+            test "${#matches[@]}" -eq 1
+            local wheel="${matches[0]}"
+            local clean_root
+            clean_root="$(mktemp -d "${RUNNER_TEMP}/macos-wheel-${py_tag}.XXXXXX")"
+            local clean_venv="${clean_root}/venv"
+
+            "${python_exe}" -m venv "${clean_venv}"
+            cd "${clean_root}"
+            env -u PYTHONPATH PIP_DISABLE_PIP_VERSION_CHECK=1 \
+              "${clean_venv}/bin/python" -m pip install --only-binary=:all: "${wheel}"
+
+            env -u PYTHONPATH SOURCE_ROOT="${GITHUB_WORKSPACE}" \
+              "${clean_venv}/bin/python" -I - <<'PY'
+          import os
+          import pathlib
+          import sys
+          from importlib.metadata import distributions
+
+          import fit_webview_bridge
+          from fit_webview_bridge import SystemWebView, systemwebview
+
+          prefix = pathlib.Path(sys.prefix).resolve()
+          source_root = pathlib.Path(os.environ["SOURCE_ROOT"]).resolve()
+          for module in (fit_webview_bridge, systemwebview):
+              path = pathlib.Path(module.__file__).resolve()
+              print(path)
+              assert path.is_relative_to(prefix), (path, prefix)
+              assert not path.is_relative_to(source_root), (path, source_root)
+
+          names = {
+              dist.metadata["Name"].lower().replace("_", "-")
+              for dist in distributions()
+              if dist.metadata["Name"]
+          }
+          assert {"pyside6", "shiboken6"}.issubset(names), names
+          forbidden = {"cmake", "ninja", "scikit-build-core", "shiboken6-generator"}
+          assert names.isdisjoint(forbidden), names & forbidden
+          print("isolated macOS import OK")
+          PY
+
+            local installed_so
+            installed_so="$(env -u PYTHONPATH "${clean_venv}/bin/python" -I -c \
+              'from fit_webview_bridge import systemwebview; print(systemwebview.__file__)')"
+            test -f "${installed_so}"
+
+            local file_output
+            file_output="$(file "${installed_so}")"
+            printf '%s\n' "${file_output}"
+            grep -q 'arm64' <<<"${file_output}"
+            test "$(lipo -archs "${installed_so}")" = "arm64"
+
+            local linkage
+            local load_commands
+            local native_strings
+            linkage="$(otool -L "${installed_so}")"
+            load_commands="$(otool -l "${installed_so}")"
+            native_strings="$(strings "${installed_so}")"
+            printf '%s\n' "${linkage}"
+            for framework in QtCore QtGui QtWidgets; do
+              grep -q "${framework}.framework" <<<"${linkage}"
+            done
+            grep -q 'libpyside6' <<<"${linkage}"
+            grep -q 'libshiboken6' <<<"${linkage}"
+            grep -q '@loader_path/../PySide6/Qt/lib' <<<"${load_commands}"
+            grep -q '@loader_path/../PySide6' <<<"${load_commands}"
+            grep -q '@loader_path/../shiboken6' <<<"${load_commands}"
+
+            for forbidden_path in \
+              "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}" "${QT_ROOT}" "${TMPDIR}"; do
+              if grep -Fq "${forbidden_path%/}" <<<"${linkage}${load_commands}" || \
+                 grep -Fq "${forbidden_path%/}" <<<"${native_strings}"; then
+                echo "Build/source path leaked into installed extension: ${forbidden_path%/}" >&2
+                exit 1
+              fi
+            done
+            echo "Validated $(basename "${wheel}")"
+          }
+
+          validate_wheel "${PY311}" 311
+          validate_wheel "${PY312}" 312
+          validate_wheel "${PY313}" 313
+
+      - name: Upload macOS wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-wheels
+          path: ${{ env.WHEELHOUSE }}/*.whl
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux x86_64 wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      QT_VERSION: "6.9.0"
+      PYSIDE_VERSION: "6.9.0"
+      WHEELHOUSE: ${{ runner.temp }}/linux-x86_64-wheels
+      QT_ROOT: ${{ runner.temp }}/Qt
+      Qt6_DIR: ${{ runner.temp }}/Qt/6.9.0/gcc_64/lib/cmake/Qt6
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Confirm x86_64 runner
+        run: |
+          set -euo pipefail
+          uname -m
+          cat /etc/os-release
+          test "$(uname -m)" = "x86_64"
+
+      - name: Install Ubuntu build and X11 runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates clang-format curl git \
+            libegl1 libgl1 libgl1-mesa-dri libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-util1 libxcb-xkb1 libxkbcommon-x11-0 libxml2 \
+            ninja-build pkg-config ripgrep xauth xvfb
+
+      - name: Setup Python 3.11
+        id: py311
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Setup Python 3.12
+        id: py312
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Setup Python 3.13
+        id: py313
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Resolve project version
+        id: project
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          version="$("${PYTHON_EXE}" -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "Resolved project version: ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Python build tools and bindings
+        env:
+          PY311: ${{ steps.py311.outputs.python-path }}
+          PY312: ${{ steps.py312.outputs.python-path }}
+          PY313: ${{ steps.py313.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          for python_exe in "${PY311}" "${PY312}" "${PY313}"; do
+            "${python_exe}" -m pip install --upgrade pip
+            "${python_exe}" -m pip install \
+              "PySide6==${PYSIDE_VERSION}" \
+              "shiboken6==${PYSIDE_VERSION}" \
+              "shiboken6-generator==${PYSIDE_VERSION}" \
+              "scikit-build-core>=0.9" \
+              auditwheel build cmake ninja packaging
+          done
+          "${PY311}" -m pip install aqtinstall
+
+      - name: Install Qt 6.9.0 SDK
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" -m aqt install-qt \
+            linux desktop "${QT_VERSION}" linux_gcc_64 --outputdir "${QT_ROOT}"
+          test -f "${Qt6_DIR}/Qt6Config.cmake"
+
+      - name: Build and validate Python 3.11 wheel
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+          PYTHON_VERSION: "3.11"
+          PY_TAG: "311"
+        run: ./scripts/linux/ci_build_wheel.sh
+
+      - name: Build and validate Python 3.12 wheel
+        env:
+          PYTHON_EXE: ${{ steps.py312.outputs.python-path }}
+          PYTHON_VERSION: "3.12"
+          PY_TAG: "312"
+        run: ./scripts/linux/ci_build_wheel.sh
+
+      - name: Build and validate Python 3.13 wheel
+        env:
+          PYTHON_EXE: ${{ steps.py313.outputs.python-path }}
+          PYTHON_VERSION: "3.13"
+          PY_TAG: "313"
+        run: ./scripts/linux/ci_build_wheel.sh
+
+      - name: Validate Linux release wheel set and metadata
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" scripts/release/validate_release.py wheels \
+            --wheel-dir "${WHEELHOUSE}" \
+            --project-file pyproject.toml \
+            --platform linux \
+            --forbid-path "${GITHUB_WORKSPACE}" \
+            --forbid-path "${RUNNER_TEMP}" \
+            --forbid-path "${QT_ROOT}"
+
+      - name: Upload Linux wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-wheels
+          path: ${{ env.WHEELHOUSE }}/*.whl
+          if-no-files-found: error
+
+  assemble-index:
+    name: Assemble dry-run FIT Python Index
+    needs:
+      - build-macos
+      - build-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        id: py311
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install release validation tools
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" -m pip install --upgrade pip
+          "${PYTHON_EXE}" -m pip install packaging
+
+      - name: Resolve project version
+        id: project
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          version="$("${PYTHON_EXE}" -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          normalized="$("${PYTHON_EXE}" -c 'import tomllib; from packaging.version import Version; print(Version(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]))')"
+          echo "Resolved project version: ${version} (normalized: ${normalized})"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "normalized=${normalized}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create clean staging directory
+        id: staging
+        run: |
+          set -euo pipefail
+          staging_root="$(mktemp -d "${RUNNER_TEMP}/fit-release.XXXXXX")"
+          mkdir "${staging_root}/wheels"
+          echo "wheels=${staging_root}/wheels" >> "${GITHUB_OUTPUT}"
+          echo "site=${staging_root}/site" >> "${GITHUB_OUTPUT}"
+
+      - name: Download macOS ARM64 wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-arm64-wheels
+          path: ${{ steps.staging.outputs.wheels }}
+
+      - name: Download Linux x86_64 wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-wheels
+          path: ${{ steps.staging.outputs.wheels }}
+
+      - name: Validate combined six-wheel release payload
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" scripts/release/validate_release.py wheels \
+            --wheel-dir "${{ steps.staging.outputs.wheels }}" \
+            --project-file pyproject.toml \
+            --platform all
+
+      - name: Generate and validate static Simple Index
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "${PYTHON_EXE}" scripts/release/validate_release.py generate-index \
+            --wheel-dir "${{ steps.staging.outputs.wheels }}" \
+            --site-dir "${{ steps.staging.outputs.site }}" \
+            --project-file pyproject.toml
+          "${PYTHON_EXE}" scripts/release/validate_release.py validate-index \
+            --site-dir "${{ steps.staging.outputs.site }}" \
+            --project-file pyproject.toml
+          find "${{ steps.staging.outputs.site }}" -type f -print | sort
+
+      - name: Test pip install against local Simple API
+        shell: bash
+        env:
+          PYTHON_EXE: ${{ steps.py311.outputs.python-path }}
+          PROJECT_VERSION: ${{ steps.project.outputs.version }}
+          NORMALIZED_VERSION: ${{ steps.project.outputs.normalized }}
+          SITE_DIR: ${{ steps.staging.outputs.site }}
+        run: |
+          set -euo pipefail
+          server_log="${RUNNER_TEMP}/fit-simple-server.log"
+          "${PYTHON_EXE}" -m http.server 8765 \
+            --bind 127.0.0.1 --directory "${SITE_DIR}" >"${server_log}" 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in {1..20}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:8765/simple/fit-webview-bridge/ >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "${ready}" -eq 1
+
+          consumer_root="$(mktemp -d "${RUNNER_TEMP}/fit-index-consumer.XXXXXX")"
+          consumer_venv="${consumer_root}/venv"
+          resolved_dir="${consumer_root}/resolved"
+          mkdir "${resolved_dir}"
+          "${PYTHON_EXE}" -m venv "${consumer_venv}"
+
+          env -u PYTHONPATH PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            "${consumer_venv}/bin/python" -m pip download \
+              --no-deps --only-binary=:all: \
+              --index-url http://127.0.0.1:8765/simple/ \
+              --dest "${resolved_dir}" \
+              "fit-webview-bridge==${PROJECT_VERSION}"
+          mapfile -t resolved_wheels < <(find "${resolved_dir}" -maxdepth 1 -type f -name '*.whl' -print)
+          test "${#resolved_wheels[@]}" -eq 1
+          [[ "$(basename "${resolved_wheels[0]}")" == *-cp311-cp311-linux_x86_64.whl ]]
+
+          env -u PYTHONPATH PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            "${consumer_venv}/bin/python" -m pip install \
+              --no-deps --only-binary=:all: --no-cache-dir \
+              --index-url http://127.0.0.1:8765/simple/ \
+              "fit-webview-bridge==${PROJECT_VERSION}"
+          env -u PYTHONPATH EXPECTED_VERSION="${NORMALIZED_VERSION}" \
+            "${consumer_venv}/bin/python" -I - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          installed = version("fit-webview-bridge")
+          print("Installed FIT wheel version from local Simple API:", installed)
+          assert installed == os.environ["EXPECTED_VERSION"]
+          PY
+
+          kill "${server_pid}"
+          wait "${server_pid}" || true
+          trap - EXIT
+
+      - name: Upload dry-run FIT Python Index artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fit-python-index-dry-run
+          path: ${{ steps.staging.outputs.site }}
+          if-no-files-found: error
