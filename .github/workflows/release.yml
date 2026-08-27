@@ -18,21 +18,28 @@ jobs:
     env:
       QT_VERSION: "6.9.0"
       PYSIDE_VERSION: "6.9.0"
-      WHEELHOUSE: ${{ runner.temp }}/macos-arm64-wheels
-      QT_ROOT: ${{ runner.temp }}/Qt
-      Qt6_DIR: ${{ runner.temp }}/Qt/6.9.0/macos/lib/cmake/Qt6
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Confirm ARM64 runner
+        id: paths
         shell: bash
         run: |
           set -euo pipefail
           uname -m
           sw_vers
           test "$(uname -m)" = "arm64"
+          wheelhouse="${RUNNER_TEMP}/macos-arm64-wheels"
+          qt_root="${RUNNER_TEMP}/Qt"
+          qt6_dir="${qt_root}/${QT_VERSION}/macos/lib/cmake/Qt6"
+          {
+            echo "WHEELHOUSE=${wheelhouse}"
+            echo "QT_ROOT=${qt_root}"
+            echo "Qt6_DIR=${qt6_dir}"
+          } >> "${GITHUB_ENV}"
+          echo "wheelhouse=${wheelhouse}" >> "${GITHUB_OUTPUT}"
 
       - name: Setup Python 3.11
         id: py311
@@ -86,12 +93,12 @@ jobs:
           CIBW_BUILD: "cp311-macosx_arm64 cp312-macosx_arm64 cp313-macosx_arm64"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: ""
           CIBW_BUILD_VERBOSITY: "1"
-          SKBUILD_CMAKE_ARGS: "-DQt6_DIR=${{ env.Qt6_DIR }}"
           SKBUILD_CONFIGURE_LOG: "1"
           SKBUILD_BUILD_LOG: "1"
           FITWVB_VENDORIZE: "1"
         run: |
           set -euo pipefail
+          export SKBUILD_CMAKE_ARGS="-DQt6_DIR=${Qt6_DIR}"
           mkdir -p "${WHEELHOUSE}"
           "${PYTHON_EXE}" -m cibuildwheel --output-dir "${WHEELHOUSE}"
 
@@ -209,7 +216,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-wheels
-          path: ${{ env.WHEELHOUSE }}/*.whl
+          path: ${{ steps.paths.outputs.wheelhouse }}/*.whl
           if-no-files-found: error
 
   build-linux:
@@ -219,20 +226,27 @@ jobs:
     env:
       QT_VERSION: "6.9.0"
       PYSIDE_VERSION: "6.9.0"
-      WHEELHOUSE: ${{ runner.temp }}/linux-x86_64-wheels
-      QT_ROOT: ${{ runner.temp }}/Qt
-      Qt6_DIR: ${{ runner.temp }}/Qt/6.9.0/gcc_64/lib/cmake/Qt6
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Confirm x86_64 runner
+        id: paths
         run: |
           set -euo pipefail
           uname -m
           cat /etc/os-release
           test "$(uname -m)" = "x86_64"
+          wheelhouse="${RUNNER_TEMP}/linux-x86_64-wheels"
+          qt_root="${RUNNER_TEMP}/Qt"
+          qt6_dir="${qt_root}/${QT_VERSION}/gcc_64/lib/cmake/Qt6"
+          {
+            echo "WHEELHOUSE=${wheelhouse}"
+            echo "QT_ROOT=${qt_root}"
+            echo "Qt6_DIR=${qt6_dir}"
+          } >> "${GITHUB_ENV}"
+          echo "wheelhouse=${wheelhouse}" >> "${GITHUB_OUTPUT}"
 
       - name: Install Ubuntu build and X11 runtime dependencies
         run: |
@@ -341,7 +355,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64-wheels
-          path: ${{ env.WHEELHOUSE }}/*.whl
+          path: ${{ steps.paths.outputs.wheelhouse }}/*.whl
           if-no-files-found: error
 
   assemble-index:
