@@ -188,10 +188,14 @@ jobs:
             test "$(lipo -archs "${installed_so}")" = "arm64"
 
             local linkage
+            local linkage_details
             local load_commands
+            local load_command_details
             local native_strings
             linkage="$(otool -L "${installed_so}")"
+            linkage_details="$(tail -n +2 <<<"${linkage}")"
             load_commands="$(otool -l "${installed_so}")"
+            load_command_details="$(tail -n +2 <<<"${load_commands}")"
             native_strings="$(strings "${installed_so}")"
             printf '%s\n' "${linkage}"
             for framework in QtCore QtGui QtWidgets; do
@@ -205,7 +209,8 @@ jobs:
 
             for forbidden_path in \
               "${GITHUB_WORKSPACE}" "${RUNNER_TEMP}" "${QT_ROOT}" "${TMPDIR}"; do
-              if grep -Fq "${forbidden_path%/}" <<<"${linkage}${load_commands}" || \
+              if grep -Fq "${forbidden_path%/}" \
+                   <<<"${linkage_details}${load_command_details}" || \
                  grep -Fq "${forbidden_path%/}" <<<"${native_strings}"; then
                 echo "Build/source path leaked into installed extension: ${forbidden_path%/}" >&2
                 exit 1
