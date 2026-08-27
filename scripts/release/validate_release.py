@@ -169,11 +169,17 @@ def validate_contents(
         if any(token in name.lower() for token in forbidden_members):
             fail(f"Forbidden bundled content in {info.path.name}: {name}")
 
-    payloads = [archive.read(name) for name in names if not name.endswith("/")]
+    payloads = [(name, archive.read(name)) for name in names if not name.endswith("/")]
     for forbidden_path in ["/home/", *forbidden_paths]:
         normalized = forbidden_path.strip().rstrip("/")
-        if normalized and any(normalized.encode() in payload for payload in payloads):
-            fail(f"Build/source path leaked into {info.path.name}: {normalized}")
+        if not normalized:
+            continue
+        for name, payload in payloads:
+            if normalized.encode() in payload:
+                fail(
+                    f"Build/source path leaked into {info.path.name} member "
+                    f"{name}: {normalized}"
+                )
 
 
 def validate_wheel_set(

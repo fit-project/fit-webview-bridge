@@ -98,6 +98,12 @@ jobs:
           FITWVB_VENDORIZE: "1"
         run: |
           set -euo pipefail
+          temp_root="${TMPDIR%/}"
+          prefix_maps="-ffile-prefix-map=${GITHUB_WORKSPACE}=."
+          prefix_maps+=" -ffile-prefix-map=${RUNNER_TEMP}=."
+          prefix_maps+=" -ffile-prefix-map=${temp_root}=."
+          export CXXFLAGS="${prefix_maps} ${CXXFLAGS:-}"
+          export OBJCXXFLAGS="${prefix_maps} ${OBJCXXFLAGS:-}"
           export SKBUILD_CMAKE_ARGS="-DQt6_DIR=${Qt6_DIR}"
           mkdir -p "${WHEELHOUSE}"
           "${PYTHON_EXE}" -m cibuildwheel --output-dir "${WHEELHOUSE}"
