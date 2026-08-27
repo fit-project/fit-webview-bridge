@@ -21,11 +21,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python 3.11
         id: py311
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Confirm ARM64 runner
         id: paths
@@ -90,19 +90,19 @@ jobs:
 
       - name: Setup Python 3.11
         id: py311
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Setup Python 3.12
         id: py312
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Setup Python 3.13
         id: py313
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -271,7 +271,7 @@ jobs:
           validate_wheel "${PY313}" 313
 
       - name: Upload macOS wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-arm64-wheels
           path: ${{ steps.paths.outputs.wheelhouse }}/*.whl
@@ -288,7 +288,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Confirm x86_64 runner
         id: paths
@@ -320,21 +320,21 @@ jobs:
 
       - name: Setup Python 3.11
         id: py311
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Setup Python 3.12
         id: py312
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Setup Python 3.13
         id: py313
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -411,7 +411,7 @@ jobs:
             --forbid-path "${QT_ROOT}"
 
       - name: Upload Linux wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64-wheels
           path: ${{ steps.paths.outputs.wheelhouse }}/*.whl
@@ -427,11 +427,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python 3.11
         id: py311
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -465,13 +465,13 @@ jobs:
           echo "site=${staging_root}/site" >> "${GITHUB_OUTPUT}"
 
       - name: Download macOS ARM64 wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-arm64-wheels
           path: ${{ steps.staging.outputs.wheels }}
 
       - name: Download Linux x86_64 wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-x86_64-wheels
           path: ${{ steps.staging.outputs.wheels }}
@@ -563,7 +563,7 @@ jobs:
 
       - name: Upload dry-run FIT Python Index artifact
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fit-python-index-dry-run
           path: ${{ steps.staging.outputs.site }}
@@ -584,14 +584,25 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: Verify FIT Python Index token availability
+        env:
+          FIT_PYTHON_INDEX_TOKEN: ${{ secrets.FIT_PYTHON_INDEX_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FIT_PYTHON_INDEX_TOKEN}" ]]; then
+            echo "::error::FIT_PYTHON_INDEX_TOKEN is unavailable to this workflow. Configure it as a repository Actions secret in fit-project/fit-webview-bridge."
+            exit 1
+          fi
+          echo "FIT_PYTHON_INDEX_TOKEN is available."
+
       - name: Checkout release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: source
 
       - name: Setup Python 3.11
         id: py311
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -612,13 +623,13 @@ jobs:
           echo "wheels=${staging_root}/wheels" >> "${GITHUB_OUTPUT}"
 
       - name: Download macOS ARM64 wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-arm64-wheels
           path: ${{ steps.staging.outputs.wheels }}
 
       - name: Download Linux x86_64 wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linux-x86_64-wheels
           path: ${{ steps.staging.outputs.wheels }}
@@ -642,7 +653,7 @@ jobs:
           echo "normalized=${normalized}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout FIT Python Index
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: fit-project/fit-python-index
           token: ${{ secrets.FIT_PYTHON_INDEX_TOKEN }}
